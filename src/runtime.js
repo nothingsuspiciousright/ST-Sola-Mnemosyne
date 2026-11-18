@@ -1,0 +1,231 @@
+import {SHELVES,newArchive,snapshotChat,mergeSources,syncActiveSources,sourceId,importMemoryBook,parseJsonReply,addFacts,extractionPrompt,retrieve,renderContext,validateArchive,terms,hash,pendingExtraction,extractionView} from './core.js';
+import {localGet,localPut,serverGet,serverPut,downloadJson} from './storage.js';
+import {ConnectionManagerRequestService} from '../../../shared.js';
+const KEY='sola_mnemosyne_v1';
+const BASE_SETTINGS={enabled:false,profileId:'',batchEvery:40,autoUpdate:true,maxTokens:2200,contextTokens:2400,recentLookback:2,autoBackup:true,archiveOnReceive:true,successNotifications:true};
+export const log=[];
+let active=null, activeId='',queue=Promise.resolve(),lastInjection='',lastSyncCount=0,autoRunning=false;
+// Short scene-local character texture should not be sent on every generation.
+const generationTicks=new Map(),lastTextureTicks=new Map();
+function ctx(){return SillyTavern.getContext();}
+function sendStatus(level,message){const item={at:new Date().toLocaleTimeString(),level,message};log.unshift(item);if(log.length>80)log.length=80;document.dispatchEvent(new CustomEvent('mnemosyne:status',{detail:item})); if(level==='error')console.error('[Mnemosyne]',message);else console.info('[Mnemosyne]',message);}
+function memoryUpdated(kind,message){
+  document.dispatchEvent(new CustomEvent('mnemosyne:updated',{detail:{kind,message,at:new Date().toISOString()}}));
+}
+export function settings(){const s=ctx().extensionSettings; if(!s[KEY])s[KEY]=structuredClone(BASE_SETTINGS);for(const [k,v] of Object.entries(BASE_SETTINGS))if(!(k in s[KEY]))s[KEY][k]=v;return s[KEY];}
+export function saveSettings(){ctx().saveSettingsDebounced();}
+export function connectionProfiles(){try{return ConnectionManagerRequestService.getSupportedProfiles();}catch(e){sendStatus('warn',`Connection Profiles: ${e.message}`);return [];}}
+function chatIdentity(){const c=ctx();return String(c.getCurrentChatId?.()??c.chatId??'');}
+function meta(){return ctx().chatMetadata?.[KEY]??null;}
+function currentMeta(){return ctx().chatMetadata??null;}
+function enqueue(task){queue=queue.catch(()=>{}).then(task);return queue;}
+async function persist(){if(active)await localPut(active);}
+export function currentArchive(){return active;}
+export function currentIdentity(){return activeId;}
+export function getStats(){return active?{...validateArchive(active),chatId:active.chatId,lastSync:active.lastSync,pending:pendingExtraction(active).assistantCount,batchEvery:settings().batchEvery,recentLog:log.slice(0,8)}:null;}
+
+/** Bind a new conversation to an independent archive (or fork a copied metadata pointer). */
+export async function openChat(){return enqueue(async()=>{
+  if(!currentMeta()) {active=null;activeId='';return null;}
+  const id=chatIdentity();if(!id){active=null;activeId='';sendStatus('warn','Chat ID unavailable. Open a saved chat to use memory.');return null;}
+  if(id===activeId&&active)return active;
+  const m=meta();let identity=m?.archiveId;let next=null;let fork=false;
+  if(m?.originChat && m.originChat!==id){fork=true;identity=crypto.randomUUID();}
+  if(!identity)identity=crypto.randomUUID();
+  try{next=await localGet(fork?m.archiveId:identity);}catch(err){sendStatus('warn',`Local archive unavailable: ${err.message}`);}
+  if(!next && m?.serverPath){try{next=await serverGet(m.serverPath);}catch(err){sendStatus('warn',`Server snapshot unavailable: ${err.message}`);}}
+  if(fork && next){next=structuredClone(next);next.lineage=next.chatId;next.chatId=identity;next.createdAt=new Date().toISOString();next.lastSync=null;next.revision++;}
+  if(!next){next=newArchive(identity,m?.archiveId&&fork?m.archiveId:'');next.autoStartIndex=ctx().chat?.length??0;}
+  // Existing archives from older builds get a safe auto-processing baseline too.
+  if(!Number.isInteger(next.autoStartIndex))next.autoStartIndex=ctx().chat?.length??0;
+  if(!Array.isArray(next.legacyBatches))next.legacyBatches=[];
+  // Chat pointers are only bound after local archive is successfully persisted.
+  await localPut(next);
+  const metadata=currentMeta();metadata[KEY]={archiveId:identity,originChat:id,serverPath:fork?'':(m?.serverPath??'')};
+  await ctx().saveMetadata();
+  active=next;activeId=id;lastSyncCount=next.sources.length;
+  await captureCurrentChat({all:!next.sources.length,quiet:true});
+  sendStatus('info',`${fork?'Forked':'Opened'} archive: ${identity.slice(0,8)}, ${next.facts.length} facts`);
+  return next;
+});}
+export async function captureCurrentChat({all=false,quiet=false}={}){
+  if(!active)return {inserted:0};const c=ctx();if(!Array.isArray(c.chat))return {inserted:0};
+  const start=all?0:Math.max(0,c.chat.length-5),entries=snapshotChat(c.chat,start);
+  const result=mergeSources(active,entries,new Set(entries.map(x=>x.index)));
+  if(result.inserted||result.changed){await persist();if(!quiet)sendStatus('info',`Archived ${result.inserted} source variants`);}
+  return result;
+}
+export async function fullRescan({notify=false}={}){if(!active)throw Error('No chat');return enqueue(async()=>{
+  const list=snapshotChat(ctx().chat);const result=mergeSources(active,list,new Set(list.map(x=>x.index)));
+  syncActiveSources(active,ctx().chat);await persist();sendStatus('info',`Full scan: ${result.inserted} new, ${result.changed} updated`);if(notify&&(result.inserted||result.changed))memoryUpdated('scan',`Архив обновлён · +${result.inserted}`);return result;
+});}
+
+/** Archived raw sources stay intact; only active swipe sources may affect retrieval. */
+export async function archiveEvent(){if(!settings().archiveOnReceive)return;
+  await enqueue(async()=>{
+    if(!active || activeId!==chatIdentity())return;
+    const before=active.sources.length;await captureCurrentChat({quiet:true});
+    const added=active.sources.length-before;
+    if(added){sendStatus('info',`+${added} new source(s)`);if(settings().autoBackup&&active.sources.length-lastSyncCount>=20)await backupNow().catch(e=>sendStatus('error',e.message));}
+  });
+}
+export async function selectSwipes(){return enqueue(async()=>{
+  if(!active||activeId!==chatIdentity())return;
+  const changed=syncActiveSources(active,ctx().chat);if(changed){await persist();sendStatus('info',`Active swipe records updated (${changed})`);}
+});}
+async function callArchivist(messages, maxTokens=1800){
+  const p=settings().profileId;if(!p)throw Error('Choose a separate archivist Connection Profile');
+  const profiles=ConnectionManagerRequestService.getSupportedProfiles();if(!profiles.find(x=>x.id===p))throw Error('Selected Connection Profile not available');
+  const result=await ConnectionManagerRequestService.sendRequest(p,messages,maxTokens,
+    {stream:false,extractData:true,includePreset:false,includeInstruct:false},
+    {temperature:0.1,stream:false});
+  return parseJsonReply(result?.content??result);
+}
+/** Batch extraction; broken response never marks a batch as complete. */
+export async function processBacklog({force=false}={}){
+  if(!active)throw Error('No chat is open');if(!settings().profileId)throw Error('Select an archivist profile');
+  return enqueue(async()=>{
+    await captureCurrentChat({quiet:true});
+    const {sources:candidates,assistantCount}=pendingExtraction(active,{force});
+    if(!force&&assistantCount<settings().batchEvery)return {waiting:true,assistantCount};
+    let count=0,created=0;
+    for(let i=0;i<candidates.length;i+=6){
+      const six=candidates.slice(i,i+6);
+      const origChatId=activeId;
+      const id=`batch-${hash(six.map(x=>x.id).join('|'))}`;
+      try{
+        const reply=await callArchivist(extractionPrompt(six),settings().maxTokens);
+        if(origChatId!==chatIdentity())throw Error('Chat changed during extraction; aborted to prevent contamination');
+        if(!Array.isArray(reply.facts))throw Error('Archivist JSON missing facts array');
+        const added=addFacts(active,six.map(x=>x.id),reply.facts);
+        active.batches.push({id,sourceIds:six.map(x=>x.id),status:'done',facts:added.length,at:new Date().toISOString()});
+        active.revision++;count++;created+=added.length;
+        await persist();sendStatus('info',`Batch ${count}: ${added.length} facts / ${six.length} messages`);
+      }catch(err){active.diagnostics.push({at:new Date().toISOString(),kind:'extract_error',id,message:err.message});await persist();sendStatus('error',`Batch extraction stopped: ${err.message}`);throw err;}
+    }
+    if(settings().autoBackup && count){
+      try {await backupNow();} catch (err) {sendStatus('warn',`Факты сохранены, но серверная копия не создана: ${err.message}`);}
+    }
+    if(count){
+      memoryUpdated('extract',created?`Мнемозина обновила память · +${created} фактов`:`Мнемозина обработала ${count} пакетов · новых фактов нет`);
+    }
+    return {batches:count,facts:created};
+  });
+}
+/** Automatically process only NEW assistant replies collected since activation. */
+export async function maybeAutoProcess(){
+  if(autoRunning||!active||!settings().autoUpdate||!settings().profileId)return {waiting:true};
+  const due=pendingExtraction(active).assistantCount;
+  if(due<settings().batchEvery)return {waiting:true,assistantCount:due};
+  autoRunning=true;
+  try {return await processBacklog({force:false});}
+  finally {autoRunning=false;}
+}
+/** Deep legacy migration using the separate profile; raw imported book remains unchanged. */
+export async function processLegacy(){
+  if(!active)throw Error('No chat is open');
+  if(!settings().profileId)throw Error('Select an archivist Connection Profile');
+  return enqueue(async()=>{
+    const completed=new Set((active.legacyBatches??[]).filter(b=>b.status==='done').flatMap(b=>b.chunkIds));
+    const pending=active.chunks.filter(c=>!completed.has(c.id));
+    let batches=0,facts=0;
+    for(let i=0;i<pending.length;i+=5){
+      const block=pending.slice(i,i+5),ids=block.map(c=>c.id);
+      const prompt=[{role:'system',content:'You are a strictly sourced archive librarian. Read paragraphs from an old RP Memory Book. Respond with JSON only: {"facts":[{"shelf":"chronology|people|relationships|promises|items|knowledge|locations|secrets|quotes|threads|other","text":"fact","people":["names"],"tags":["specific names or objects"],"knowledge_holder":"reader-only or exact character","certainty":"confirmed|belief|possibility","lifecycle":"active|closed|historical","source_ids":["provided chunk id"]}]}. Every fact must cite provided chunk ids. Separate what happened, opinions, secret knowledge and possible future plans. Preserve exact memorable lines. Do not invent facts. Maximum 35 facts.'},
+        {role:'user',content:JSON.stringify({chunks:block.map(c=>({id:c.id,heading:c.heading,text:c.raw.slice(0,3200)}))})}];
+      const identity=activeId;
+      try{
+        const reply=await callArchivist(prompt,settings().maxTokens);
+        if(identity!==chatIdentity())throw Error('Chat changed while migrating old Memory Book');
+        if(!Array.isArray(reply.facts))throw Error('Archivist returned no facts array');
+        const added=addFacts(active,ids,reply.facts);
+        (active.legacyBatches??=[]).push({chunkIds:ids,status:'done',at:new Date().toISOString()});
+        active.revision++;await persist();batches++;facts+=added.length;
+        sendStatus('info',`Legacy index ${batches}: +${added.length} facts`);
+      }catch(err){sendStatus('error',`Migration index failed: ${err.message}`);throw err;}
+    }
+    if(settings().autoBackup&&batches)try{await backupNow();}catch(e){sendStatus('warn',`Imported data saved locally; remote backup failed: ${e.message}`);}
+    if(batches)memoryUpdated('legacy',`Наследие разобрано · +${facts} фактов`);
+    return {batches,facts};
+  });
+}
+/** Prefer the newest player action to an older assistant recap.
+ * Short continuation commands may require context from the preceding scene. */
+function sourceQuery(){
+  const chat=ctx().chat??[];
+  const plain=m=>String(m?.mes??'')
+    .replace(/<([a-z][\w-]*_easel)\b[^>]*>[\s\S]*?<\/\1\s*>/gi,' ')
+    .replace(/<en>[\s\S]*?<\/en>/gi,' ')
+    .replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim();
+  const lastUser=[...chat].reverse().find(m=>m?.is_user);
+  const lastAssistant=[...chat].reverse().find(m=>m&&!m.is_user&&!m.is_system);
+  const userText=plain(lastUser);
+  const assistantText=plain(lastAssistant);
+  // Short 'continue' commands need the active scene; substantive player posts take precedence.
+  if(terms(userText).length<2)return assistantText.slice(-1200);
+  return [userText.slice(-1700),assistantText.slice(-300)].filter(Boolean).join(' ');
+}
+/** Inject before outgoing generation; no direct mutation of ST messages. */
+export async function beforeGeneration(type){
+  const c=ctx();if(!settings().enabled||!active||activeId!==chatIdentity()){
+    c.setExtensionPrompt('SOLA_MNEMOSYNE','',1,1,false);return;
+  }
+  if(['quiet','impersonate'].includes(type)){c.setExtensionPrompt('SOLA_MNEMOSYNE','',1,1,false);return;}
+  try{
+    // Always retrieve directly relevant history and active state. One optional
+    // background association is allowed only once per five generation attempts.
+    const tick=(generationTicks.get(activeId)??0)+1;
+    generationTicks.set(activeId,tick);
+    const allowTexture=tick-(lastTextureTicks.get(activeId)??-100)>=5;
+    const chosen=retrieve(active,sourceQuery(),{
+      maxCharacters:Math.max(1000,Math.round(settings().contextTokens*2.4)),
+      maxItems:16,mode:'automatic',maxAnchors:allowTexture?1:0,
+    });
+    const prompt=renderContext(chosen);
+    c.setExtensionPrompt('SOLA_MNEMOSYNE',prompt,1,1,false);
+    if(chosen.some(x=>x.anchor))lastTextureTicks.set(activeId,tick);
+    lastInjection=`${new Date().toLocaleTimeString()} · ${chosen.length} records · ${prompt.length} characters`;
+    document.dispatchEvent(new CustomEvent('mnemosyne:injected',{detail:lastInjection}));
+  }catch(e){c.setExtensionPrompt('SOLA_MNEMOSYNE','',1,1,false);sendStatus('error',`Prompt injection failed: ${e.message}`);}
+}
+export function injectionInfo(){return lastInjection;}
+export async function importLegacy(text,label='Memory Book') {
+  if(!active)throw Error('Open a chat first');
+  return enqueue(async()=>{const out=importMemoryBook(active,text,{label});await persist();sendStatus('info',out.duplicate?'Legacy source already imported':`Migrated ${out.count} chunks from ${label}`);if(!out.duplicate)memoryUpdated('import',`Наследие сохранено · ${out.count} записей`);return out;});
+}
+export function detectLegacy(){const c=ctx();const matches=[];
+  const visited=new Set();
+  function walk(obj,path,depth){if(depth>5||obj==null)return;
+    if(typeof obj==='string'){if(obj.length>200&&/MEMORY BOOK|\[Events Chronicle|\[Main characters|\[Changes in personality/i.test(obj))matches.push({path,length:obj.length,text:obj});return;}
+    if(typeof obj!=='object'||visited.has(obj))return;visited.add(obj);
+    for(const [key,val] of Object.entries(obj).slice(0,200))if(!/key|token|password|secret|auth/i.test(key))walk(val,`${path}.${key}`,depth+1);
+  }
+  walk(c.chatMetadata,'chatMetadata',0);
+  // Only read narrowly identified prior Summarize data; never depend on Summarize itself.
+  walk(c.extensionSettings?.memory,'settings.memory',0);
+  walk(c.extensionSettings?.summarize,'settings.summarize',0);
+  for(const [i,m] of (c.chat??[]).entries())if(/MEMORY BOOK|\[Events Chronicle|\[Main characters/i.test(m.mes??''))matches.push({path:`chat[${i}]`,length:m.mes.length,text:m.mes});
+  const seen=new Set();return matches.filter(m=>{const h=hash(m.text);if(seen.has(h))return false;seen.add(h);return true;}).sort((a,b)=>b.length-a.length);
+}
+export function preview(text){return {label:'Memory Book',chunks:(text.match(/\n\s*\n/g)||[]).length+1,characters:text.length};}
+export async function backupNow(){if(!active)throw Error('No archive');
+  await persist();const identity=active.chatId;
+  const backup=await serverPut(active);
+  // Don't attach a server pointer to the wrong chat if navigation happened mid-upload.
+  if(active?.chatId===identity&&chatIdentity()===activeId){
+    active.lastSync=backup.at;await persist();const m=currentMeta();if(m?.[KEY]?.archiveId===identity){m[KEY].serverPath=backup.path;await ctx().saveMetadata();}
+    lastSyncCount=active.sources.length;
+  }
+  sendStatus('info',`Server backup saved: ${backup.bytes} characters`);
+  return backup;
+}
+export function exportBackup(){if(!active)throw Error('No archive');downloadJson(active,`Sola-Mnemosyne-${active.chatId}-${new Date().toISOString().slice(0,10)}.json`);}
+export async function restoreBackup(json){if(!active)throw Error('Open a chat');
+  const data=typeof json==='string'?JSON.parse(json):json;const valid=validateArchive(data);if(!valid.valid)throw Error(valid.errors.join('; '));
+  return enqueue(async()=>{
+    const restored=structuredClone(data);restored.lineage=restored.chatId;restored.chatId=active.chatId;restored.revision++;restored.lastSync=null;
+    active=restored;await persist();sendStatus('warn','Restored archive from backup; export a new snapshot before continuing.');memoryUpdated('restore','Архив восстановлен из копии');return validateArchive(active);
+  });
+}
+export function shelfRecords(shelf){if(!active)return [];return [...active.facts.filter(x=>x.shelf===shelf),...active.chunks.filter(x=>x.shelves.includes(shelf))].slice(-400).reverse();}
+export async function checkHealth(){if(!active)return {valid:false,errors:['No archive']};const v=validateArchive(active);v.connectionReady=!!settings().profileId&&connectionProfiles().some(x=>x.id===settings().profileId);v.serverSynced=!!active.lastSync;v.injection=lastInjection;return v;}

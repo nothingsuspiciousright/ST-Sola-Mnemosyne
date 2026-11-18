@@ -1,0 +1,14 @@
+{
+  "display_name": "Sola Mnemosyne · Deep Memory",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "dependencies": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Sola Mnemosyne",
+  "version": "0.3.3",
+  "minimum_client_version": "1.13.0",
+  "auto_update": false,
+  "generate_interceptor": "solaMnemosyneBeforeGeneration"
+}
