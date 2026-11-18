@@ -118,12 +118,64 @@ export function addFacts(archive, sourceIds, candidates) {
   }
   if(added.length||touched)archive.revision++;return added;
 }
+/** Fail closed: never fabricate missing JSON punctuation or silently swallow a broken fact. */
 export function parseJsonReply(reply) {
-  if(reply&&typeof reply==='object')return reply;
-  const text=String(reply??'').trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'');
-  try{return JSON.parse(text);}catch{}
-  const first=text.indexOf('{'),last=text.lastIndexOf('}');if(first>=0&&last>first)return JSON.parse(text.slice(first,last+1));
-  throw Error('Archivist did not return valid JSON');
+  if(reply && typeof reply === 'object') {
+    // Some providers return a rich content block rather than a plain string.
+    if(Array.isArray(reply)) {
+      const parts=reply.map(p=>typeof p==='string'?p:(p?.text??p?.content??'')).filter(x=>typeof x==='string');
+      if(parts.length)return parseJsonReply(parts.join('\n'));
+    }
+    return reply;
+  }
+  const value=String(reply??'').trim();
+  const text=value.replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'').trim();
+  try{return JSON.parse(text);}catch(initialError) {
+    const first=text.indexOf('{'),last=text.lastIndexOf('}');
+    if(first>=0&&last>first&&(first!==0||last!==text.length-1)) {
+      try{return JSON.parse(text.slice(first,last+1));}catch{}
+    }
+    // Do not log or persist the provider's response: it may include private RP data.
+    throw Error(`Archivist returned invalid JSON (${initialError.message}). No facts from this attempt were saved.`);
+  }
+}
+
+/** Choose tiny, source-preserving legacy jobs, rather than five large paragraphs
+ * whose large JSON answer frequently exceeds a cheap model's output budget. */
+export function planLegacyJobs(chunks, {maxChunks=2,maxCharacters=2600}={}) {
+  const jobs=[];let job=[],length=0;
+  for(const chunk of chunks) {
+    const size=String(chunk.raw??'').length;
+    if(job.length&&(job.length>=maxChunks||length+size>maxCharacters)){
+      jobs.push(job);job=[];length=0;
+    }
+    job.push(chunk);length+=size;
+  }
+  if(job.length)jobs.push(job);
+  return jobs;
+}
+
+/** Retries are deliberately source-preserving: one bad model reply cannot
+ * mark the chunk as processed or corrupt a previously imported Memory Book. */
+export async function requestLegacyFacts(chunks, request, {maxAttempts=2,maxTokens=2200,onRetry=()=>{}}={}) {
+  let lastError;
+  for(let attempt=1;attempt<=maxAttempts;attempt++){
+    const maxFacts=attempt===1?12:8;
+    const prompt=[
+      {role:'system',content:`You are an archival fact extractor. Output ONE SMALL COMPACT VALID JSON OBJECT ONLY. No Markdown, comments or explanatory prose. JSON schema: {"facts":[{"shelf":"chronology","text":"a concise sourced fact","people":[],"tags":[],"knowledge_holder":"reader-only","certainty":"confirmed","lifecycle":"historical","source_ids":["exact supplied id"]}]}. Allowed shelves: chronology,people,relationships,promises,items,knowledge,locations,secrets,quotes,threads,other. Distinguish NPC knowledge from reader-only secrets. Never invent details. Each fact MUST cite an actual chunk ID. Keep original-language quotations exact where possible. Return at most ${maxFacts} high-value facts; concise JSON on one line; escape quotation marks/newlines inside strings. If no facts, return {"facts":[]}.`},
+      {role:'user',content:JSON.stringify({chunks:chunks.map(c=>({id:c.id,heading:c.heading,text:c.raw}))})},
+    ];
+    try{
+      const result=await request(prompt,maxTokens,attempt);
+      const data=parseJsonReply(result);
+      if(!data||!Array.isArray(data.facts))throw Error('Archivist JSON has no facts array');
+      return data.facts;
+    }catch(e){
+      lastError=e;
+      if(attempt<maxAttempts)onRetry({attempt,reason:e.message});
+    }
+  }
+  throw Error(`Legacy extraction failed after ${maxAttempts} attempts: ${lastError?.message??'unknown error'}`);
 }
 export function activeFact(f,archive) {
   const chunkIds=new Set(archive.chunks.map(x=>x.id));

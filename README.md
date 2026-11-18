@@ -2,7 +2,7 @@
 
 **Independent, structured, vector-free RP memory for SillyTavern.** A browser-side extension designed for long-running roleplay, with an optional *separate, cheaper* Connection Profile to extract facts from chat messages. It does **not** replace or modify your RP preset, chat text, Summarize, or world books.
 
-> Version 0.3.3 — installable preview. Pure archive logic has automated tests. The SillyTavern integration and your provider's Connection Profile must be verified in your own installation before you disable existing memory. **Keep Summarize enabled until the migration check passes.**
+> Version 0.3.4 — installable preview. Pure archive logic has automated tests. The SillyTavern integration and your provider's Connection Profile must be verified in your own installation before you disable existing memory. **Keep Summarize enabled until the migration check passes.**
 
 ## Key features
 
@@ -88,3 +88,9 @@ No third-party JS packages or build step are needed.
 ## License
 
 MIT. This repository contains extension code only. **Never commit your RP transcript or Memory Book to a public GitHub repository.**
+
+## v0.3.4 — Deep-inheritance JSON recovery
+
+Deep Memory Book indexing now sends small legacy-fragment jobs (no more than two short paragraphs), requires compact valid JSON, and retries invalid model responses twice. If a two-fragment batch cannot be parsed, Mnemosyne retries each fragment individually. Successful results are committed per job; a failed job remains pending for the next run. The original Memory Book text, stored source fragments and already completed jobs are not replaced. No generated text from failed model responses is persisted in logs.
+
+**After an error in v0.3.3:** update the installed GitHub extension, reload SillyTavern, return to the same chat, and click “Глубокая разметка старой Memory Book” again. Do **not** import the book a second time and do **not** disable Summarize until health checks and live generation tests succeed. Repeated API calls may cost extra; this patch improves recovery but cannot guarantee every provider follows JSON syntax.

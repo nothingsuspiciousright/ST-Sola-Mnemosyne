@@ -1,4 +1,4 @@
-import {SHELVES,newArchive,snapshotChat,mergeSources,syncActiveSources,sourceId,importMemoryBook,parseJsonReply,addFacts,extractionPrompt,retrieve,renderContext,validateArchive,terms,hash,pendingExtraction,extractionView} from './core.js';
+import {SHELVES,newArchive,snapshotChat,mergeSources,syncActiveSources,sourceId,importMemoryBook,parseJsonReply,addFacts,extractionPrompt,retrieve,renderContext,validateArchive,terms,hash,pendingExtraction,extractionView,planLegacyJobs,requestLegacyFacts} from './core.js';
 import {localGet,localPut,serverGet,serverPut,downloadJson} from './storage.js';
 import {ConnectionManagerRequestService} from '../../../shared.js';
 const KEY='sola_mnemosyne_v1';
@@ -128,21 +128,47 @@ export async function processLegacy(){
   return enqueue(async()=>{
     const completed=new Set((active.legacyBatches??[]).filter(b=>b.status==='done').flatMap(b=>b.chunkIds));
     const pending=active.chunks.filter(c=>!completed.has(c.id));
+    const jobs=planLegacyJobs(pending);
     let batches=0,facts=0;
-    for(let i=0;i<pending.length;i+=5){
-      const block=pending.slice(i,i+5),ids=block.map(c=>c.id);
-      const prompt=[{role:'system',content:'You are a strictly sourced archive librarian. Read paragraphs from an old RP Memory Book. Respond with JSON only: {"facts":[{"shelf":"chronology|people|relationships|promises|items|knowledge|locations|secrets|quotes|threads|other","text":"fact","people":["names"],"tags":["specific names or objects"],"knowledge_holder":"reader-only or exact character","certainty":"confirmed|belief|possibility","lifecycle":"active|closed|historical","source_ids":["provided chunk id"]}]}. Every fact must cite provided chunk ids. Separate what happened, opinions, secret knowledge and possible future plans. Preserve exact memorable lines. Do not invent facts. Maximum 35 facts.'},
-        {role:'user',content:JSON.stringify({chunks:block.map(c=>({id:c.id,heading:c.heading,text:c.raw.slice(0,3200)}))})}];
-      const identity=activeId;
-      try{
-        const reply=await callArchivist(prompt,settings().maxTokens);
-        if(identity!==chatIdentity())throw Error('Chat changed while migrating old Memory Book');
-        if(!Array.isArray(reply.facts))throw Error('Archivist returned no facts array');
-        const added=addFacts(active,ids,reply.facts);
-        (active.legacyBatches??=[]).push({chunkIds:ids,status:'done',at:new Date().toISOString()});
-        active.revision++;await persist();batches++;facts+=added.length;
-        sendStatus('info',`Legacy index ${batches}: +${added.length} facts`);
-      }catch(err){sendStatus('error',`Migration index failed: ${err.message}`);throw err;}
+    const identity=activeId;
+    const commit=async(block,candidates)=>{
+      // No result is ever committed after the player switches conversations.
+      if(identity!==chatIdentity()||activeId!==identity)throw Error('Chat changed during legacy migration; result discarded');
+      const ids=block.map(c=>c.id);
+      const added=addFacts(active,ids,candidates);
+      (active.legacyBatches??=[]).push({chunkIds:ids,status:'done',at:new Date().toISOString(),facts:added.length});
+      active.revision++;
+      await persist();batches++;facts+=added.length;
+      sendStatus('info',`Legacy index: ${batches}/${jobs.length} jobs completed, +${added.length} facts`);
+    };
+    const ask=async(block)=>requestLegacyFacts(block,
+      (prompt,tokenLimit)=>callArchivist(prompt,tokenLimit),
+      {maxAttempts:2,maxTokens:settings().maxTokens,
+       onRetry:({attempt})=>sendStatus('warn',`Archivist JSON invalid; retrying this memory fragment (${attempt}/2). Earlier records remain safe.`)});
+    for(const block of jobs){
+      let extracted;
+      try{extracted=await ask(block);}catch(error){
+        // Fall back only for model-response failures, never for storage failures.
+        if(block.length>1){
+          sendStatus('warn','Memory batch failed; trying smaller individual fragments.');
+          for(const single of block){
+            let factsForSingle;
+            try{factsForSingle=await ask([single]);}catch(inner){
+              active.diagnostics.push({at:new Date().toISOString(),kind:'legacy_error',chunkIds:[single.id],message:inner.message});
+              await persist();
+              sendStatus('error',`Legacy index paused. Saved progress can be resumed: ${inner.message}`);
+              throw inner;
+            }
+            await commit([single],factsForSingle);
+          }
+          continue;
+        }
+        active.diagnostics.push({at:new Date().toISOString(),kind:'legacy_error',chunkIds:block.map(c=>c.id),message:error.message});
+        await persist();
+        sendStatus('error',`Legacy index paused. Saved progress can be resumed: ${error.message}`);
+        throw error;
+      }
+      await commit(block,extracted);
     }
     if(settings().autoBackup&&batches)try{await backupNow();}catch(e){sendStatus('warn',`Imported data saved locally; remote backup failed: ${e.message}`);}
     if(batches)memoryUpdated('legacy',`Наследие разобрано · +${facts} фактов`);

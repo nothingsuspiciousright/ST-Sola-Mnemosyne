@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   newArchive, importMemoryBook, validateArchive, splitMemoryBook, guessShelves,
   snapshotChat, mergeSources, syncActiveSources, normalizeFact,
-  addFacts, retrieve, parseJsonReply, renderContext, terms,
+  addFacts, retrieve, parseJsonReply, renderContext, terms, planLegacyJobs, requestLegacyFacts,
 } from '../src/core.js';
 
 const sample=`MEMORY BOOK\n[Main characters]\n- Agent Alpha: has access to Zone C.\n\n[Relationships]\n- Agent Alpha and Agent Beta share access to Zone C.\n\n[Events Chronicle]\n— Nov 1, 08:15: Agent Beta transferred an access token to Agent Alpha.\n\n[Core items]\n- Access token: stored in Zone C.\n\n[Important quotes]\n- “Verify the access token.”`;
@@ -146,4 +146,43 @@ test('memory retrieval after explicit recollection request can include a sourced
   addFacts(a,[ch.id],[{shelf:'chronology',text:'Agent Alpha assigned object X-17 to Agent Beta.',people:['Agent Alpha','Agent Beta'],lifecycle:'historical',source_ids:[ch.id]}]);
   const hits=retrieve(a,'Do you remember Agent Alpha?',{mode:'automatic'});
   assert.ok(hits.some(x=>x.kind==='fact'&&!x.anchor));
+});
+
+
+test('deep inheritance retries invalid cheap-model JSON and retains source citations',async()=>{
+  const book=newArchive('sanitized-chat');
+  importMemoryBook(book,'[Events Chronicle]\nAgent Epsilon delivered item R-9 to Station D.');
+  const c=book.chunks[0];let calls=0;
+  const data=await requestLegacyFacts([c],async(prompt)=>{
+    calls++;
+    assert.equal(prompt[1].role,'user');
+    assert.match(prompt[1].content,/Agent Epsilon/);
+    if(calls===1)return '{"facts":[{"text":"invalid"} {"text":"missing comma"}]}';
+    return JSON.stringify({facts:[{shelf:'items',text:'Item R-9 was delivered to Station D.',source_ids:[c.id],certainty:'confirmed'}]});
+  },{maxTokens:2200});
+  assert.equal(calls,2);
+  assert.equal(addFacts(book,[c.id],data).length,1);
+  assert.equal(validateArchive(book).valid,true);
+  assert.equal(book.imports[0].raw,'[Events Chronicle]\nAgent Epsilon delivered item R-9 to Station D.');
+});
+
+test('invalid JSON is rejected, not guessed or marked successful',async()=>{
+  let count=0;
+  await assert.rejects(requestLegacyFacts([{id:'source1',heading:'x',raw:'sample'}],async()=>{
+    count++;return '{"facts":[{"text":"a"} {"text":"b"}]}';
+  }),/failed after 2 attempts/);
+  assert.equal(count,2);
+});
+
+test('legacy jobs are small and keep every original fragment exactly once',()=>{
+  const data=[600,1200,1500,2800,400,700].map((length,i)=>({id:`source-${i}`,raw:'A'.repeat(length)}));
+  const jobs=planLegacyJobs(data);
+  assert.ok(jobs.every(job=>job.length<=2));
+  assert.deepEqual(jobs.flat().map(x=>x.id),data.map(x=>x.id));
+  assert.ok(jobs.every(job=>job.length===1||job.reduce((n,c)=>n+c.raw.length,0)<=2600));
+});
+
+test('fenced model response is accepted and content arrays are supported',()=>{
+  assert.deepEqual(parseJsonReply([{type:'text',text:'```json\n{"facts":[]}\n```'}]),{facts:[]});
+  assert.throws(()=>parseJsonReply('{"facts":[1,2 3]}'),/invalid JSON/);
 });
