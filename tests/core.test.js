@@ -96,7 +96,8 @@ test('archivist sees recap and scene, not only first 10k chars of metadata-heavy
   const input=extractionView({role:'assistant',raw});
   assert.match(input,/The access token was moved/);
   assert.match(input,/Inventory value is 12/);
-  assert.ok(input.length<15000);
+  assert.equal(input,raw);
+  assert.ok(input.length>30000); // no invisible clipping, full scene and recap survive
 });
 
 test('silent continuity: unrelated active facts do not enter RP context',()=>{

@@ -103,3 +103,40 @@
 #mnemosyne-toast .mn-toast-content{overflow-wrap:anywhere}
 @media (prefers-reduced-motion:reduce){#mnemosyne-toast.mn-toast{transition:none;transform:none}}
 @media(max-width:480px){#mnemosyne-toast.mn-toast{right:12px;bottom:max(15px,env(safe-area-inset-bottom));max-width:min(300px,calc(100vw - 24px));font-size:11px}}
+
+/* Per-chat unread indicators; these are cleared per shelf only when opened. */
+#mnemosyne-panel .mn-chip{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;}
+#mnemosyne-panel .mn-unread{display:inline-flex;white-space:nowrap;align-items:center;
+  font:600 10px/1.35 system-ui,sans-serif;border-radius:99px;padding:2px 6px;
+  box-sizing:border-box;border:1px solid transparent;}
+#mnemosyne-panel .mn-unread-new,#mnemosyne-panel .mn-record-marker-new{
+  color:#e4efff;border-color:rgba(184,210,245,.34);background:rgba(165,194,228,.16);}
+#mnemosyne-panel .mn-unread-changed,#mnemosyne-panel .mn-record-marker-changed{
+  color:#f5deab;border-color:rgba(224,186,119,.34);background:rgba(200,161,98,.15);}
+#mnemosyne-panel .mn-record-new{border-left:2px solid rgba(175,207,246,.65);padding-left:7px;
+  background:linear-gradient(90deg,rgba(176,206,248,.065),transparent 70%);}
+#mnemosyne-panel .mn-record-changed{border-left:2px solid rgba(235,195,118,.65);padding-left:7px;
+  background:linear-gradient(90deg,rgba(223,182,111,.07),transparent 70%);}
+#mnemosyne-panel .mn-record-marker{display:inline-block;box-sizing:border-box;
+  font:600 10px/1.4 system-ui,sans-serif;border:1px solid transparent;
+  padding:2px 6px;margin:0 0 0 8px;border-radius:99px;vertical-align:middle;}
+
+/* Deliberate destructive operation isolated from routine actions. */
+#mnemosyne-panel .mn-danger-zone{margin:20px 0 16px;padding:12px 14px;
+ border:1px solid rgba(227,146,146,.32);border-radius:10px;
+ background:rgba(179,69,69,.055);}
+#mnemosyne-panel .mn-danger-zone h4{margin:0 0 8px;color:var(--mn-ink);}
+#mnemosyne-panel .mn-danger-button{border-color:rgba(232,140,140,.52)!important;
+ color:#f0baba!important;}
+#mnemosyne-panel .mn-danger-button:disabled{opacity:.5;cursor:progress;}
+
+/* Load full recaps in small batches, avoiding huge DOM lists in long chats. */
+#mnemosyne-panel .mn-show-more {display:block;box-sizing:border-box;width:100%;
+  margin:8px 0 3px;padding:10px 12px;border:1px solid var(--mn-line);
+  border-radius:8px;background:rgba(167,190,219,.13);color:var(--mn-ink);
+  cursor:pointer;font-size:12px;}
+#mnemosyne-panel .mn-show-more:hover{background:rgba(167,190,219,.23)}
+
+/* Indexing progress and cooperative pause/resume. */
+#mnemosyne-panel .mn-index-progress{margin:8px 0;padding:9px 10px;border:1px solid var(--mn-line);border-radius:9px;background:#9cbbdb0c;font:12px/1.5 inherit;overflow-wrap:anywhere;color:#d9e5f5;}
+#mnemosyne-panel #mn-stop-index:disabled,#mnemosyne-panel #mn-resume-index:disabled{opacity:.45;cursor:default;}

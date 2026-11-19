@@ -2,7 +2,7 @@
 
 **Independent, structured, vector-free RP memory for SillyTavern.** A browser-side extension designed for long-running roleplay, with an optional *separate, cheaper* Connection Profile to extract facts from chat messages. It does **not** replace or modify your RP preset, chat text, Summarize, or world books.
 
-> Version 0.3.5 — installable preview. Pure archive logic has automated tests. The SillyTavern integration and your provider's Connection Profile must be verified in your own installation before you disable existing memory. **Keep Summarize enabled until the migration check passes.**
+> Version 0.3.13 — installable preview. Pure archive logic has automated tests. The SillyTavern integration and your provider's Connection Profile must be verified in your own installation before you disable existing memory. **Keep Summarize enabled until the migration check passes.**
 
 ## Key features
 
@@ -95,13 +95,87 @@ Deep Memory Book indexing now sends small legacy-fragment jobs (no more than two
 
 **After an error in v0.3.3:** update the installed GitHub extension, reload SillyTavern, return to the same chat, and click “Глубокая разметка старой Memory Book” again. Do **not** import the book a second time and do **not** disable Summarize until health checks and live generation tests succeed. Repeated API calls may cost extra; this patch improves recovery but cannot guarantee every provider follows JSON syntax.
 
-## v0.3.6 — Long memory text UI fix
+## v0.3.7 — Long memory text UI fix
 
 Memory shelves and source search now use scoped, accessible expandable rows instead of browser-native `<details>` elements. Long imported paragraphs remain scrollable within each row and can no longer overlap the following records/footer when a SillyTavern theme overrides native disclosure styles. Archive storage, parsing, retrieval and prompt injection are unchanged. No migration or re-import is needed.
 
 
-## Структурированная память (v0.3.6)
+## Структурированная память (v0.3.7)
 
 Тематические полочки показывают **только отдельные факты** архивариуса. Исходные фрагменты старой Memory Book доступны во вкладке «Наследие» → «Сохранённые первоисточники». Сведения из исходника не теряются. Отдельная кнопка «Переразметить ВСЮ старую книгу» заново индексирует старый импорт небольшими порциями и заменяет прежние классификации только при полном успехе. Учитывай возможную стоимость запросов к архивариусу.
 
 Обещания теперь имеют статусы `unknown`, `pending`, `fulfilled`, `broken`, `cancelled`, а арки — `planned`, `active`, `completed`, `paused`, `abandoned`, `unknown`. Статусы привязываются к конкретному событию и его источнику; без свидетельств завершения обещание не помечается выполненным. Knowledge NPC хранится отдельно от reader-only секретов. Прежде чем отключать Summarize, проверь результат на копии чата.
+
+## Непрочитанные обновления (v0.3.7)
+
+В полочках для каждого чата раздельно показываются новые записи (серебристая ✦) и изменения прежних состояний (золотистый ◆). При открытии полочки записи подсвечиваются; отметки «непрочитано» только этой полочки исчезают, но подсветка в текущем просмотре остаётся. Отслеживание опирается на стабильный `entity_key`, если архивариус его возвращает. Если модель не привязала исправление к прежнему объекту, запись может определиться как новая. Исходные факты и старые версии статусов сохраняются.
+
+
+## v0.3.9 — Полные recap снова на полочках
+
+- Новая самостоятельная полочка **«Полные recap»** показывает целиком тело каждого recap из сохранённых ответов ассистента. Никакого пересказа и новых платных запросов.
+- Записи связаны с конкретным сообщением и выбранным свайпом; просмотр исходников доступен отдельно через поиск и полный архив.
+- Просмотр по 30 записей с кнопкой загрузки следующих 30, чтобы не создавать десятки тысяч элементов интерфейса сразу.
+- Серебристые/золотистые индикаторы новых и изменённых recap работают отдельно для каждого чата; снимок прочитанного хранит только контрольную подпись, не копию текста.
+- Это **виртуальная полочка** из `archive.sources[].raw`: повторно импортировать Memory Book или запускать дешёвую модель не требуется.
+- Если старые recap не были захвачены архивом, нажмите **«Обновить архив из чата»**. Сведения, отсутствовавшие в оригинальном чате, расширение восстановить не может.
+- Полные recap хранятся вне постоянного промпта; только небольшой контекстный фрагмент может быть извлечён при достаточно конкретной связи с текущей сценой. Он подчиняется общему бюджету.
+
+
+### v0.3.9 — when an archivist provider refuses source content
+
+A provider may return an explicit safety/content-policy refusal. Mnemosyne **does not bypass** that response: it archives the full original source locally, marks the batch `blocked`, continues with the other batches, and reports the missed coverage in Diagnostics. This is not a success status and no model-generated facts are fabricated for blocked messages. A generic API error is treated as unknown and processing pauses.
+
+If your provider only exposes `API request failed` and the same batch cannot be processed, download a backup first, then use **Пропустить ошибочный пакет (оригинал сохранить)**. It intentionally leaves a gap in *structured* memory but does not destroy raw story text or complete recap. The manual action is available only for a batch that failed previously, and requires confirmation. Diagnostics show the number of such gaps.
+
+**Quality audit:** Open Diagnostics → Check. Besides archive integrity, the `quality` field describes imported-vs-chat fact counts and source processing gaps. These warnings do not automatically edit or merge RP canon.
+
+## v0.3.10 — independent archivist output limit
+
+The *RP context budget* (`contextTokens`) limits injection into your RP model. The *archivist output limit* (`maxTokens`) limits tokens the separate model can use to produce reasoning plus structured JSON, as enforced by the API/provider. These are different. The archivist output setting is now visible, default 8192. Older hidden 2200-token settings are automatically raised once; user-configured RP context limits are not modified. Chat source batches are smaller and malformed JSON receives a larger-token retry, then is split into separate messages if needed. Never record incomplete results as successful extraction. API refusal still leaves affected originals safely archived and unprocessed.
+
+
+## Full memory reset for the current chat (v0.3.11)
+
+In **Diagnostics**, click **Очистить ВСЮ память текущего чата**. First download
+(and verify) a private full-archive JSON backup. Confirm the warning, then enter
+`СБРОС` exactly. The command creates a new empty archive identity for that chat,
+detaches and deletes the old local IndexedDB archive and removes its known
+SillyTavern server snapshot (where accessible). Deletion failures are explicitly
+reported, not hidden. Downloaded JSON backups must be deleted manually if desired.
+
+This removes ALL Mnemosyne information for the selected chat: imported Memory
+Books, atomic facts, full raw sources (and their virtual complete recap shelf),
+processing states and blocked batches, staged reindex work, read receipts and
+diagnostics. It does **not** delete messages/swipes in SillyTavern, affect other
+chat archives, change the main RP preset, erase the archivist profile, or disable
+Summarize. Any persistent historic server backups that are not referenced by
+the old archive pointer must be handled separately.
+
+A reset stays empty even after reloading SillyTavern: scanning and model requests are paused until you explicitly rescan.
+
+To start over: click **Обновить архив из чата** to read all accessible raw chat
+messages (no API calls), then **Обработать новые события** to extract facts using
+the selected archivist model (may consume paid quota). If you want the previous
+Memory Book too, import it again on the **Наследие** tab.
+
+## v0.3.13 — Bigger model input + visible recovery
+
+- Adjustable **archivist input cap** (4K, 8K, 16K, 32K or 50K approximately) is completely separate from the archivist *output* budget and the RP model's *memory injection* budget. Uses a conservative character-based approximation; actual API token count and proxy limits may differ.
+- Inputs group chronologically adjacent active-swipe source messages within the selected input budget. A batch may be substantially smaller than the selected cap. Oversized requests are split on recognized provider context-length errors. A source is never silently deleted or abbreviated in stored archive.
+- Previously fixed 20-fact chat cap replaced by an adjustable per-request fact target based on the *output* token allowance, with splitting when the model hits that cap. **No LLM can guarantee extraction of every detail** from a 50K-token prompt. Complete original messages and recaps are the source of truth.
+- **Остановить индексацию** cooperatively stops after the *currently running* request completes. It does not guarantee cancellation of an already sent HTTP request or a refund. **Продолжить с места остановки / ошибки** retries only still-unprocessed source IDs, using the saved completed-batch checkpoint. Under provider policy refusal, the batch remains marked blocked and isn't retried automatically.
+- The archive records the failing batch ID, message index, and error reason. Diagnostics display the pointer and per-run progress. The manual skip action targets **exactly the previously failed source IDs**; skipped raw originals remain in the archive without fabricated facts.
+- New extraction metadata distinguishes the **in-world event date/time** from the real SillyTavern message timestamp. Unknown event dates remain unknown. Where dates were not extracted, the UI may show the raw *source scene header* as context, **not** assert it was necessarily the event's date. Full recaps also show their available in-world header.
+- The **Locations** shelf displays repeated entries with the same normalized `entity_key` as one expandable place card, keeping all distinct recorded descriptions and source citations. Visits belong in chronology. Unmatched or differently named places are not automatically merged as that can corrupt canon.
+- This release does **not** rewrite previously imported facts or repopulate missing game dates in existing records. Use backup + safe rescan/reindex if you want fresh structured extraction; never publish your RP exports or archives to a public repository.
+
+**Recovery steps:** When an API/JSON failure stops chat indexing, correct the provider issue then click **Продолжить с места остановки / ошибки**. Already committed `done` batches will not be re-billed; the failed batch is still pending. If the provider explicitly rejected a batch under its content policy, the raw source is kept but the status is `blocked` and the batch will not be automatically retried. Keep backups and review Diagnostics before disabling Summarize.
+
+### v0.3.13 — Recovery for source integrity, locations and gateway timeouts
+
+- The archive extractor now transmits whole messages, with full statblock and recap; batch splitting is performed between messages. A single oversized message is flagged unprocessed instead of clipping source text.
+- Explicit `promptFeedback.blockReason` refusals are handled as provider policy events; the original text is retained and no unsupported bypass transformations are attempted.
+- Recognized HTTP 504 proxy timeouts split oversized message batches, then retry a single message once. Generic `API request failed` without a status stops safely instead of guessing the cause.
+- Temporary scene occupancy is not a permanent location trait; such old facts are displayed under Chronology while raw provenance remains immutable.
+- Fact titles show an explicit game date/time when known. If only the source statblock contains a date, it is displayed as the source scene date, **not** an invented event date.

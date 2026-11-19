@@ -1,9 +1,10 @@
 /** Entry point. Importing this file doesn't alter a user's RP preset or chat. */
 import * as mn from './src/runtime.js';
-import {SHELVES, retrieve, validateArchive, splitMemoryBook} from './src/core.js';
+import {SHELVES, retrieve, validateArchive, splitMemoryBook, inGameStamp} from './src/core.js';
 import {initNotifications, notifyMemoryUpdated} from './src/notifications.js';
+import {recordKey} from './src/read-markers.js';
 const BASE=new URL('.',import.meta.url);
-let selectedShelf='chronology',activeTab='archive',candidates=[];
+let selectedShelf='chronology',activeTab='archive',candidates=[],visibleShelfChanges=new Map(),recapShown=30;
 const $ = selector=>document.querySelector(`#mnemosyne-panel ${selector}`);
 function status(message,bad=false){const el=$('#mn-status');if(el){el.textContent=message;el.dataset.level=bad?'error':'info';}}
 function displayError(error){status(error?.message??String(error),true);console.error('[Mnemosyne]',error);}
@@ -13,7 +14,11 @@ function renderProfiles(){const sel=$('#mn-profile');if(!sel)return;sel.replaceC
   for(const p of mn.connectionProfiles())sel.append(mkOption(p.id,`${p.name} · ${p.model??p.api??''}`));sel.value=mn.settings().profileId??'';
 }
 function updateChat(){const s=mn.getStats(),v=$('#mn-overview');if(!v)return;
-  v.textContent=s?`Источников: ${s.sourceCount} · фактов: ${s.factCount} · фрагментов оригинала: ${s.chunkCount} · импортов: ${s.imports} · новых ответов до автообновления: ${Math.max(0,s.batchEvery-s.pending)} · ${s.valid?'целостность OK':'ОШИБКИ'}`:'Открой сохранённый чат для работы с памятью.';
+  const ix=s?.indexing; const stop=$('#mn-stop-index');const resume=$('#mn-resume-index');
+  if(stop)stop.disabled=!ix?.running; if(resume)resume.disabled=!!ix?.running;
+  const prog=$('#mn-index-progress');
+  if(prog)prog.textContent=ix?.progress?`Индексация: ${ix.progress.status} · ${ix.progress.completedSources??0}/${ix.progress.totalSources??'?'} исходников${ix.lastError?' · ошибка на сообщении #'+(ix.lastError.firstMessageIndex+1):''}`:'Индексация не запускалась.';
+  v.textContent=s?.awaitingManualScan?'Память этого чата очищена. Для нового прохода сначала нажми «Обновить архив из чата».':s?`Источников: ${s.sourceCount} · фактов: ${s.factCount} · фрагментов оригинала: ${s.chunkCount} · импортов: ${s.imports} · заблокированных пакетов: ${s.blockedBatches} · новых ответов до автообновления: ${Math.max(0,s.batchEvery-s.pending)} · ${s.valid?'целостность OK':'ОШИБКИ'}`:'Открой сохранённый чат для работы с памятью.';
   renderOriginals();
   $('#mn-sync').textContent=s?.lastSync?`Снимок сервера: ${new Date(s.lastSync).toLocaleString()}`:'Резервная копия ещё не создана';
   $('#mn-injection').textContent=mn.injectionInfo()||'Память ещё не подставлялась в запрос';
@@ -35,12 +40,34 @@ function makeRecordRow(label, body, metadata=''){
 }
 function renderShelves(){const parent=$('#mn-shelves');if(!parent)return;parent.replaceChildren();
   for(const [id,name] of Object.entries(SHELVES)){
-    const button=document.createElement('button');button.type='button';button.textContent=name;button.dataset.shelf=id;button.className=id===selectedShelf?'mn-chip current':'mn-chip';
-    button.addEventListener('click',()=>{selectedShelf=id;renderShelves();});parent.append(button);
+    const button=document.createElement('button');button.type='button';button.className=`mn-chip${id===selectedShelf?' current':''}`;
+    button.append(document.createTextNode(name));
+    const changes=mn.shelfChanges(id);
+    for(const [kind,count] of [['new',changes.added],['changed',changes.changed]]){
+      if(!count)continue;
+      const pill=document.createElement('span');pill.className=`mn-unread mn-unread-${kind}`;
+      pill.textContent=`${kind==='new'?'✦':'◆'} ${count}`;
+      pill.title=kind==='new'?`${count} новых записей`:`${count} изменённых записей`;
+      button.append(pill);
+    }
+    button.addEventListener('click',async()=>{
+      if(id!==selectedShelf)recapShown=30;
+      selectedShelf=id;
+      // Keep visual highlights for the opened shelf, but clear unread counters
+      // persistently for this chat. Other shelves retain their unread status.
+      visibleShelfChanges=mn.shelfChanges(id).entries;
+      renderShelves();
+      try{await mn.markShelfRead(id);renderShelves();}catch(e){displayError(e);}
+    });
+    parent.append(button);
   }
   const list=$('#mn-records');list.replaceChildren();
-  const items=mn.shelfRecords(selectedShelf).slice(0,80);
-  if(!items.length){list.textContent='Структурированных записей здесь пока нет. Оригинальная Memory Book сохранена во вкладке «Наследие»; при необходимости запусти переразметку.';return;}
+  const allItems=mn.shelfRecords(selectedShelf);
+  const rawSourceById=new Map((mn.currentArchive()?.sources??[]).map(x=>[x.id,x.raw]));
+  const items=allItems.slice(0,selectedShelf==='recaps'?recapShown:80);
+  if(!items.length){list.textContent=selectedShelf==='recaps'
+    ?'В архиве этого чата пока нет распознанных recap. Нажми «Обновить архив из чата»: исходные ответы будут прочитаны без обращения к архивариусу и без повторного импорта Memory Book.'
+    :'Структурированных записей здесь пока нет. Оригинальная Memory Book сохранена во вкладке «Наследие»; при необходимости запусти переразметку.';return;}
   const promiseNames={unknown:'не определён',pending:'ожидает выполнения',fulfilled:'выполнено',broken:'нарушено',cancelled:'отменено'};
   const arcNames={unknown:'не определён',planned:'планируется',active:'идёт',completed:'завершена',paused:'приостановлена',abandoned:'оставлена'};
   for(const item of items){
@@ -48,12 +75,45 @@ function renderShelves(){const parent=$('#mn-shelves');if(!parent)return;parent.
     const arcMark={unknown:'? статус неизвестен',planned:'○ планируется',active:'◐ продолжается',completed:'✓ завершена',paused:'Ⅱ на паузе',abandoned:'× прекращена'};
     const prefix=selectedShelf==='promises'?`[${promiseMark[item.promiseStatus]??promiseMark.unknown}] `:
       selectedShelf==='arcs'?`[${arcMark[item.arcStatus]??arcMark.unknown}] `:'';
-    const summary=prefix+item.text.slice(0,145);
+    const sourceStamp=(item.sourceIds??[]).map(id=>inGameStamp(rawSourceById.get(id))).find(Boolean)||'';
+    const dateTitle=item.eventDate?`[${item.eventDate}${item.eventTime?' · '+item.eventTime:''}] `:sourceStamp?`[сцена ${sourceStamp}] `:'';
+    const previewText=String(item.text||'').replace(/\s+/g,' ').trim();
+    const preview=previewText.length<=185?previewText:previewText.slice(0,185).replace(/\s+\S*$/,'')+'…';
+    const summary=selectedShelf==='recaps'
+      ?`Recap · сообщение #${item.messageIndex+1} · ${item.text.replace(/\s+/g,' ').slice(0,110)}`
+      :selectedShelf==='locations'&&item.displayName?`⌖ ${item.displayName}`:dateTitle+prefix+preview;
     const status=selectedShelf==='promises'?` · Обещание: ${promiseNames[item.promiseStatus]??'не определён'}`:
       selectedShelf==='arcs'?` · Арка: ${arcNames[item.arcStatus]??'не определён'}`:
       selectedShelf==='knowledge'?` · Кому известно: ${item.knowledge||'не установлено'} (${item.knowledgeState||'unknown'})`:'';
-    const metadata=`Источник: ${item.sourceIds?.join(', ')??'—'} · ${item.certainty??'неизвестно'} · ${item.lifecycle??''}${status}`;
-    list.append(makeRecordRow(summary,item.text,metadata));
+    const metadata=selectedShelf==='recaps'
+      ?`Полный оригинальный recap · игровое время: ${item.gameStamp||'не указано'} · источник: ${item.sourceId} · свайп ${item.swipe+1} · ${item.text.length} символов${item.sourceDate?' · сохранено: '+item.sourceDate:''}`
+      :`Дата события: ${item.eventDate||'не установлена'}${item.eventTime?' · '+item.eventTime:''}${sourceStamp&&!item.eventDate?' · сцена источника: '+sourceStamp:''}${item.placeName?' · место: '+item.placeName:''} · Источник: ${item.sourceIds?.join(', ')??'—'} · ${item.certainty??'неизвестно'} · ${item.lifecycle??''}${status}${item.mentionCount>1?' · упоминаний места: '+item.mentionCount:''}`;
+    const row=makeRecordRow(summary,item.text,metadata);
+    const diff=visibleShelfChanges.get(recordKey(item));
+    if(diff){
+      row.classList.add(`mn-record-${diff.kind}`);
+      const mark=document.createElement('span');mark.className=`mn-record-marker mn-record-marker-${diff.kind}`;
+      mark.textContent=diff.kind==='new'?'✦ Новое':'◆ Изменено';
+      mark.title=diff.kind==='new'?'Добавлено после последнего просмотра полочки':'Обновлено после последнего просмотра полочки';
+      const button=row.querySelector('.mn-record-toggle');
+      if(button)button.append(mark);
+      if(diff.kind==='changed'&&diff.previous){
+        const previous=diff.previous;
+        const prior=selectedShelf==='promises'?previous.promiseStatus:selectedShelf==='arcs'?previous.arcStatus:
+          selectedShelf==='knowledge'?previous.knowledgeState:'';
+        const now=selectedShelf==='promises'?item.promiseStatus:selectedShelf==='arcs'?item.arcStatus:
+          selectedShelf==='knowledge'?item.knowledgeState:'';
+        if(prior&&now&&prior!==now){const note=row.querySelector('.mn-meta');
+          if(note)note.textContent+=` · Статус: ${prior} → ${now}`;}
+      }
+    }
+    list.append(row);
+  }
+  if(selectedShelf==='recaps'&&allItems.length>items.length){
+    const more=document.createElement('button');more.type='button';more.className='mn-show-more';
+    more.textContent=`Показать ещё 30 recap · отображено ${items.length} из ${allItems.length}`;
+    more.addEventListener('click',()=>{recapShown+=30;renderShelves();});
+    list.append(more);
   }
 }
 function renderOriginals(){
@@ -84,19 +144,50 @@ async function initUI(){const container=document.querySelector('#extensions_sett
   if(!container)throw Error('SillyTavern extension settings area not found');
   const html=await fetch(new URL('./settings.html',BASE)).then(r=>{if(!r.ok)throw Error('Settings template missing');return r.text();});
   const host=document.createElement('div');host.innerHTML=html;container.append(host);
-  const s=mn.settings();$('#mn-enabled').checked=s.enabled;$('#mn-interval').value=s.batchEvery;$('#mn-budget').value=s.contextTokens;$('#mn-auto-update').checked=s.autoUpdate;$('#mn-auto-backup').checked=s.autoBackup;$('#mn-success-notifications').checked=s.successNotifications;
+  const s=mn.settings();$('#mn-enabled').checked=s.enabled;$('#mn-interval').value=s.batchEvery;$('#mn-budget').value=s.contextTokens;$('#mn-archivist-tokens').value=s.maxTokens;$('#mn-input-tokens').value=s.inputBudgetTokens;$('#mn-auto-update').checked=s.autoUpdate;$('#mn-auto-backup').checked=s.autoBackup;$('#mn-success-notifications').checked=s.successNotifications;
   for(const b of document.querySelectorAll('#mnemosyne-panel [data-tab]'))b.addEventListener('click',()=>switchTab(b.dataset.tab));
   bind('#mn-enabled','change',()=>{s.enabled=$('#mn-enabled').checked;mn.saveSettings();status(s.enabled?'Подстановка памяти включена.':'Подстановка памяти выключена.');});
   bind('#mn-profile','change',()=>{s.profileId=$('#mn-profile').value;mn.saveSettings();status('Профиль архивариуса сохранён; основная модель RP не менялась.');});
   bind('#mn-interval','change',()=>{s.batchEvery=Math.max(1,Math.min(200,Number($('#mn-interval').value)||40));$('#mn-interval').value=s.batchEvery;mn.saveSettings();});
   bind('#mn-budget','change',()=>{s.contextTokens=Math.max(300,Math.min(12000,Number($('#mn-budget').value)||2400));$('#mn-budget').value=s.contextTokens;mn.saveSettings();});
+  bind('#mn-archivist-tokens','change',()=>{s.maxTokens=Math.max(1024,Math.min(32768,Number($('#mn-archivist-tokens').value)||8192));$('#mn-archivist-tokens').value=s.maxTokens;$('#mn-input-tokens').value=s.inputBudgetTokens;mn.saveSettings();});
+  bind('#mn-input-tokens','change',()=>{s.inputBudgetTokens=Math.max(4000,Math.min(50000,Number($('#mn-input-tokens').value)||16000));$('#mn-input-tokens').value=s.inputBudgetTokens;mn.saveSettings();});
   bind('#mn-auto-update','change',()=>{s.autoUpdate=$('#mn-auto-update').checked;mn.saveSettings();status(s.autoUpdate?'Автообновление включено.':'Автообновление выключено.');});
   bind('#mn-auto-backup','change',()=>{s.autoBackup=$('#mn-auto-backup').checked;mn.saveSettings();});
   bind('#mn-success-notifications','change',()=>{s.successNotifications=$('#mn-success-notifications').checked;mn.saveSettings();});
   bind('#mn-scan','click',async()=>{await mn.fullRescan({notify:true});updateChat();});
-  bind('#mn-extract','click',async()=>{status('Архивариус обрабатывает новые события…');const r=await mn.processBacklog({force:true});status(`Готово: ${r.batches} пачек, ${r.facts} фактов`);updateChat();});
+  bind('#mn-extract','click',async()=>{status('Архивариус обрабатывает новые события…');const r=await mn.processBacklog({force:true});status(`Готово: ${r.batches} пакетов, +${r.facts} фактов, заблокировано ${r.blocked??0}. Пропуски не считаются извлечёнными фактами.`);updateChat();});
+  bind('#mn-stop-index','click',()=>{if(mn.stopIndexing())status('Остановка запрошена. Текущий запрос может завершиться, новые пакеты не запускаются.');updateChat();});
+  bind('#mn-resume-index','click',async()=>{status('Продолжаю с первого необработанного пакета…');const r=await mn.resumeIndexing();status(r.stopped?'Индексация приостановлена.':`Обработка завершена: +${r.facts??0} фактов, пропусков ${r.blocked??0}.`);updateChat();});
+  bind('#mn-skip-failed','click',async()=>{
+    if(!window.confirm('Пропустить один ранее ошибочный пакет? Его оригинальные сообщения останутся сохранёнными, но ФАКТЫ из них не будут извлечены. Продолжить?'))return;
+    const r=await mn.skipFailedBatch();status(`Пропущен проблемный пакет ${r.id}: ${r.messages} исходников сохранены локально без разметки. Нажми «Обработать новые события», чтобы продолжить.`);updateChat();
+  });
   bind('#mn-sync-now','click',async()=>{status('Сохраняю резервную копию на сервер SillyTavern…');const r=await mn.backupNow();status(`Сохранено: ${r.path}`);updateChat();});
   bind('#mn-export','click',()=>{mn.exportBackup();status('Полный архив экспортирован в JSON.');});
+  bind('#mn-reset-current','click',async()=>{
+    const a=mn.currentArchive();
+    if(!a)throw Error('Сначала открой сохранённый чат.');
+    const summary=`${a.sources?.length??0} исходников, ${a.facts?.length??0} фактов, ${a.imports?.length??0} импортов и все recap`;
+    if(!window.confirm(`ПОЛНЫЙ СБРОС ПАМЯТИ ТЕКУЩЕГО ЧАТА\n\nБудет очищено: ${summary}.\n\nЧат SillyTavern и настройки подключения останутся, но Mnemosyne забудет всё.\n\nТы уже скачала и проверила резервный JSON?`))return;
+    const typed=window.prompt('Для безвозвратного сброса введи СБРОС заглавными буквами. Чтобы отменить — закрой окно.');
+    if(typed!=='СБРОС'){status('Сброс отменён. Память не изменена.');return;}
+    $('#mn-reset-current').disabled=true;
+    try{
+      status('Создаю новый пустой архив и удаляю данные Мнемозины текущего чата…');
+      const result=await mn.resetCurrentChat();
+      candidates=[];visibleShelfChanges=new Map();selectedShelf='chronology';recapShown=30;
+      $('#mn-search').value='';$('#mn-results').replaceChildren();
+      $('#mn-import-text').value='';$('#mn-import-file').value='';
+      $('#mn-detected').replaceChildren(mkOption('','— источники ещё не искали —'));
+      $('#mn-diagnostics').textContent='Архив сброшен. Новая диагностика ещё не запускалась.';
+      updateChat();
+      status(result.cleanupErrors.length
+        ?`Новый пустой архив готов, но некоторые старые копии не удалось удалить: ${result.cleanupErrors.join('; ')}`
+        :'Полный сброс завершён. Далее: «Обновить архив из чата» → «Обработать новые события». При желании заново импортируй Memory Book.',
+        result.cleanupErrors.length>0);
+    }finally{$('#mn-reset-current').disabled=false;}
+  });
   bind('#mn-restore','change',async()=>{const f=$('#mn-restore').files?.[0];if(!f)return;if(!window.confirm('Заменить текущий архив этой резервной копией? Сначала экспортируй текущую!'))return;await restoreFile(f);});
   bind('#mn-detect','click',listDetection);
   bind('#mn-original-select','change',renderOriginals);
@@ -127,6 +218,7 @@ async function initUI(){const container=document.querySelector('#extensions_sett
     }
   });
   document.addEventListener('mnemosyne:status',()=>{renderLog();updateChat();});
+  document.addEventListener('mnemosyne:indexing-changed',()=>updateChat());
   document.addEventListener('mnemosyne:injected',()=>updateChat());
   document.addEventListener('mnemosyne:updated',event=>notifyMemoryUpdated(event.detail?.message,mn.settings().successNotifications));
   renderProfiles();switchTab('archive');updateChat();
@@ -139,7 +231,7 @@ globalThis.solaMnemosyneBeforeGeneration=async (_chat,_contextSize,_abort,type)=
 
 async function init(){initNotifications();await initUI();const c=SillyTavern.getContext();
   const events=c.event_types,source=c.eventSource;
-  source.on(events.CHAT_CHANGED,async()=>{try{await mn.openChat();updateChat();}catch(e){displayError(e);}});
+  source.on(events.CHAT_CHANGED,async()=>{try{recapShown=30;visibleShelfChanges=new Map();await mn.openChat();updateChat();}catch(e){displayError(e);}});
   source.on(events.MESSAGE_RECEIVED,async()=>{try{await mn.archiveEvent();const a=mn.currentArchive();const count=a?.sources.filter(s=>s.active&&s.role==='assistant').length??0;
     if(mn.settings().autoUpdate&&mn.settings().profileId&&a){mn.maybeAutoProcess().then(updateChat).catch(displayError);}
     updateChat();}catch(e){displayError(e);}});
