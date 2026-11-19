@@ -2,7 +2,7 @@
 
 **Independent, structured, vector-free RP memory for SillyTavern.** A browser-side extension designed for long-running roleplay, with an optional *separate, cheaper* Connection Profile to extract facts from chat messages. It does **not** replace or modify your RP preset, chat text, Summarize, or world books.
 
-> Version 0.3.13 — installable preview. Pure archive logic has automated tests. The SillyTavern integration and your provider's Connection Profile must be verified in your own installation before you disable existing memory. **Keep Summarize enabled until the migration check passes.**
+> Version 0.3.14 — installable preview. Pure archive logic has automated tests. The SillyTavern integration and your provider's Connection Profile must be verified in your own installation before you disable existing memory. **Keep Summarize enabled until the migration check passes.**
 
 ## Key features
 
@@ -70,6 +70,12 @@ A failed batch never triggers the success notification. If extraction has commit
 - The current version stores raw sources and prompt data in IndexedDB; server snapshot syncing uploads the **entire** archive. Very large histories incur storage / upload costs; do not assume unlimited phone storage.
 - APIs differ between SillyTavern releases and proxies. The `ConnectionManagerRequestService` and interception integration are designed against current public APIs but are not live-tested against your specific installation.
 - The initial chat archive may be large; use **Обработать новые события** manually for existing chats to control initial API consumption.
+
+## Indexing progress and unread memory
+
+The thin silver progress bar reports the ratio of **completed/visited archived sources** to queued sources for this run. It stays still while a paid API request is pending; a number beside it counts actual API requests attempted in the run. Explicit provider-blocked sources are *visited but not extracted*, so a complete bar does not prove that every source produced facts. Errors and pause leave the bar at the last checkpoint.
+
+New and changed fact badges are **per-chat, per-record read receipts**. Opening a shelf does not erase unread facts. Expand an individual row to mark that exact record version as read; the indicator clears immediately after local persistence, even if indexing is still running. For bulk acknowledgement use **Отметить все прочитанными**. The current read state is saved locally with the same archive and survives a browser reload. A later status change creates a new changed badge.
 
 ## Diagnostics
 
@@ -159,7 +165,7 @@ messages (no API calls), then **Обработать новые события**
 the selected archivist model (may consume paid quota). If you want the previous
 Memory Book too, import it again on the **Наследие** tab.
 
-## v0.3.13 — Bigger model input + visible recovery
+## v0.3.14 — Bigger model input + visible recovery
 
 - Adjustable **archivist input cap** (4K, 8K, 16K, 32K or 50K approximately) is completely separate from the archivist *output* budget and the RP model's *memory injection* budget. Uses a conservative character-based approximation; actual API token count and proxy limits may differ.
 - Inputs group chronologically adjacent active-swipe source messages within the selected input budget. A batch may be substantially smaller than the selected cap. Oversized requests are split on recognized provider context-length errors. A source is never silently deleted or abbreviated in stored archive.
@@ -171,11 +177,3 @@ Memory Book too, import it again on the **Наследие** tab.
 - This release does **not** rewrite previously imported facts or repopulate missing game dates in existing records. Use backup + safe rescan/reindex if you want fresh structured extraction; never publish your RP exports or archives to a public repository.
 
 **Recovery steps:** When an API/JSON failure stops chat indexing, correct the provider issue then click **Продолжить с места остановки / ошибки**. Already committed `done` batches will not be re-billed; the failed batch is still pending. If the provider explicitly rejected a batch under its content policy, the raw source is kept but the status is `blocked` and the batch will not be automatically retried. Keep backups and review Diagnostics before disabling Summarize.
-
-### v0.3.13 — Recovery for source integrity, locations and gateway timeouts
-
-- The archive extractor now transmits whole messages, with full statblock and recap; batch splitting is performed between messages. A single oversized message is flagged unprocessed instead of clipping source text.
-- Explicit `promptFeedback.blockReason` refusals are handled as provider policy events; the original text is retained and no unsupported bypass transformations are attempted.
-- Recognized HTTP 504 proxy timeouts split oversized message batches, then retry a single message once. Generic `API request failed` without a status stops safely instead of guessing the cause.
-- Temporary scene occupancy is not a permanent location trait; such old facts are displayed under Chronology while raw provenance remains immutable.
-- Fact titles show an explicit game date/time when known. If only the source statblock contains a date, it is displayed as the source scene date, **not** an invented event date.

@@ -1,14 +1,13 @@
-# Sola Mnemosyne v0.3.13 — GitHub release
+# Sola Mnemosyne v0.3.14 — GitHub release
 
 Independent SillyTavern RP memory extension with optional cheaper archivist profile.
 
 ## Changes
 
-- Explicit Gemini-style `promptFeedback.blockReason` is recognized as a provider refusal even when the HTTP call returns no candidate. Original text and recap remain unchanged; refused sources are marked blocked rather than treated as malformed JSON. This does **not** circumvent content restrictions.
-- The locations shelf distinguishes lasting features from temporary scenes; scene observations are projected into chronology without rewriting original fact history.
-- A recognized HTTP 504 timeout triggers splitting **between complete messages**, then one retry for a single message before stopping with an actionable error.
-- Full user messages and full recap are never silently clipped for extraction. One oversized message is reported unprocessed instead of being truncated.
-- Dated fact titles show an explicit in-world timestamp (or a clearly labelled source-scene stamp) before the text; full fact text and citations remain expandable.
+- Real subdued progress bar based on committed source count, live API-request counter; paused, error and completed states never fake progress.
+- Per-record read receipts: expanding an unread fact clears its new/changed marker immediately and persistently. Merely selecting a shelf no longer silently marks every item read. Explicit **Mark all read** action is available per shelf.
+- Expanded facts stay expanded while indexing status refreshes.
+
 
 - Adjustable 4K–50K approximate **input** token budget for archivist jobs, independent of RP injection budget and model output token budget.
 - Cooperative **Stop indexing** and **Resume from first unprocessed source** controls, per-chat progress, exact failed batch ID and index.

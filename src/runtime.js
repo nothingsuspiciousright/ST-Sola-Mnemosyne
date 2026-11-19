@@ -2,7 +2,7 @@ import {SHELVES,newArchive,snapshotChat,mergeSources,syncActiveSources,sourceId,
 import {localGet,localPut,localDelete,serverGet,serverPut,serverDelete,downloadJson} from './storage.js';
 import {wipeChatMemory} from './reset.js';
 import {ConnectionManagerRequestService} from '../../../shared.js';
-import {readSnapshot,diffReadSnapshot} from './read-markers.js';
+import {readSnapshot,diffReadSnapshot,recordKey,recordSignature,setRecordRead} from './read-markers.js';
 const KEY='sola_mnemosyne_v1';
 const BASE_SETTINGS={enabled:false,profileId:'',batchEvery:40,autoUpdate:true,maxTokens:8192,contextTokens:2400,recentLookback:2,autoBackup:true,archiveOnReceive:true,successNotifications:true,inputBudgetTokens:16000};
 export const log=[];
@@ -159,6 +159,10 @@ export async function selectSwipes(){return enqueue(async()=>{
 async function callArchivist(messages, maxTokens=1800){
   const p=settings().profileId;if(!p)throw Error('Choose a separate archivist Connection Profile');
   const profiles=ConnectionManagerRequestService.getSupportedProfiles();if(!profiles.find(x=>x.id===p))throw Error('Selected Connection Profile not available');
+  if(indexing.running&&active?.indexProgress){
+    active.indexProgress.apiRequests=(active.indexProgress.apiRequests||0)+1;
+    document.dispatchEvent(new CustomEvent('mnemosyne:indexing-changed',{detail:indexingState()}));
+  }
   const result=await ConnectionManagerRequestService.sendRequest(p,messages,maxTokens,
     {stream:false,extractData:true,includePreset:false,includeInstruct:false},
     {temperature:0.1,stream:false});
@@ -195,8 +199,9 @@ export async function processBacklog({force=false}={}){
     // The selected cap is an upper bound, not an exact token guarantee.
     const jobs=planChatBatches(candidates,{maxSources:100,maxInputTokens:inputCap,knownLocations:knownLocationNames(),maxFacts:Math.max(25,Math.min(100,Math.floor(settings().maxTokens/115)))})
       .map(sources=>({sources,tokenLimit:settings().maxTokens,retried:false,timeoutRetried:false}));
-    target.indexProgress={mode:'chat',status:'running',totalSources,completedSources:0,doneBatches:0,startedAt:new Date().toISOString()};
+    target.indexProgress={mode:'chat',status:'running',totalSources,completedSources:0,doneBatches:0,apiRequests:0,startedAt:new Date().toISOString()};
     target.lastIndexError=null;await persist();
+    document.dispatchEvent(new CustomEvent('mnemosyne:indexing-changed',{detail:indexingState()}));
     for(let i=0;i<jobs.length;i++){
       if(indexing.stopRequested){target.indexProgress.status='stopped';await persist();break;}
       const job=jobs[i],batchSources=job.sources;
@@ -372,7 +377,7 @@ export async function processLegacy({rebuild=false}={}){
       initial.legacyRebuild??={fingerprint,doneIds:[],stagedFacts:[],startedAt:new Date().toISOString()};
       await persist();
     }
-    initial.indexProgress={mode:rebuild?'legacy-rebuild':'legacy',status:'running',totalSources:pending.length,completedSources:0,startedAt:new Date().toISOString()};
+    initial.indexProgress={mode:rebuild?'legacy-rebuild':'legacy',status:'running',totalSources:pending.length,completedSources:0,apiRequests:0,startedAt:new Date().toISOString()};
     for(const chunk of pending){
       if(indexing.stopRequested){initial.indexProgress.status='stopped';await persist();break;}
       if(identity!==chatIdentity()||activeId!==identity||active!==initial)
@@ -528,15 +533,31 @@ export function shelfChanges(shelf){
   // Older archives are baseline-initialized by openChat; do not manufacture unread.
   return diffReadSnapshot(shelfRecords(shelf),active.readReceipts?.[shelf]??readSnapshot(shelfRecords(shelf)));
 }
+/** Mark only a viewed record as read. The panel can stay interactive while a
+ * long model request is pending; do not queue this behind the whole index job. */
+export async function markRecordRead(shelf,record){
+  if(!SHELVES[shelf]||!active||!record)return false;
+  const target=active,identity=activeId,key=recordKey(record);
+  const current=shelfRecords(shelf).find(x=>recordKey(x)===key);
+  if(!current||recordSignature(current)!==recordSignature(record))return false;
+  target.readReceipts??={};target.readReceipts[shelf]??={};
+  const previous=target.readReceipts[shelf][key];
+  const snapshot=setRecordRead(target.readReceipts[shelf],current);
+  try{await localPut(target);return active===target&&activeId===identity;}
+  catch(err){if(active===target&&activeId===identity&&target.readReceipts[shelf][key]===snapshot){
+    if(previous)target.readReceipts[shelf][key]=previous;
+    else delete target.readReceipts[shelf][key];
+  }throw err;}
+}
+/** Explicit bulk action; opening a shelf never silently marks all unread items. */
 export async function markShelfRead(shelf){
-  if(!SHELVES[shelf]||!active)return;
+  if(!SHELVES[shelf]||!active)return false;
   const target=active,identity=activeId;
-  return enqueue(async()=>{
-    if(active!==target||activeId!==identity)return;
-    target.readReceipts??={};
-    target.readReceipts[shelf]=readSnapshot(shelfRecords(shelf));
-    await persist();
-  });
+  const old=target.readReceipts?.[shelf];
+  target.readReceipts??={};
+  target.readReceipts[shelf]=readSnapshot(shelfRecords(shelf));
+  try{await localPut(target);return active===target&&activeId===identity;}
+  catch(err){if(active===target&&activeId===identity){if(old)target.readReceipts[shelf]=old;else delete target.readReceipts[shelf];}throw err;}
 }
 export function legacySources(){return active?.imports??[];}
 export async function checkHealth(){if(!active)return {valid:false,errors:['No archive']};const v=validateArchive(active);v.connectionReady=!!settings().profileId&&connectionProfiles().some(x=>x.id===settings().profileId);v.serverSynced=!!active.lastSync;v.injection=lastInjection;v.quality=auditArchive(active);return v;}

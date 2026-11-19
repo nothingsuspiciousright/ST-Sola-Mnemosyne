@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {recordKey,readSnapshot,diffReadSnapshot} from '../src/read-markers.js';
+import {recordKey,readSnapshot,diffReadSnapshot,setRecordRead} from '../src/read-markers.js';
 import {newArchive,importMemoryBook,addFacts,normalizeFact,currentStateRecords} from '../src/core.js';
 const f=(id,text,status='pending',entity='task-1')=>({id,text,shelf:'promises',entityKey:entity,promiseStatus:status});
 test('new records are distinguished from unchanged records',()=>{
@@ -39,4 +39,27 @@ test('same wording may produce separate immutable promise status revisions',()=>
   assert.equal(addFacts(a,[id],[{...base,promise_status:'fulfilled'}]).length,1);
   assert.equal(currentStateRecords(a.facts,'promises').length,1);
   assert.equal(currentStateRecords(a.facts,'promises')[0].promiseStatus,'fulfilled');
+});
+
+test('reading one record clears exactly its marker and preserves sibling badges',()=>{
+  const old=f('a','A will deliver the parcel.');
+  const second=f('b','B will visit the library.','pending','library-visit');
+  const first=f('a2','A delivered the parcel.','fulfilled');
+  const seen=readSnapshot([old]);
+  let d=diffReadSnapshot([first,second],seen);
+  assert.deepEqual([d.added,d.changed],[1,1]);
+  setRecordRead(seen,first);
+  d=diffReadSnapshot([first,second],seen);
+  assert.deepEqual([d.added,d.changed],[1,0]);
+  assert.equal(d.entries.has(recordKey(second)),true);
+  setRecordRead(seen,second);
+  assert.deepEqual([diffReadSnapshot([first,second],seen).added,diffReadSnapshot([first,second],seen).changed],[0,0]);
+});
+test('after reading, later changes with the same entity become changed again',()=>{
+  const first=f('a','A will deliver the parcel.');
+  const updated=f('b','A delivered the parcel.','fulfilled');
+  const seen=readSnapshot([first]);setRecordRead(seen,updated);
+  assert.equal(diffReadSnapshot([updated],seen).changed,0);
+  const modified=f('c','A delivered the parcel and apologized.','fulfilled');
+  assert.equal(diffReadSnapshot([modified],seen).changed,1);
 });

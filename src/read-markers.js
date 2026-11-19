@@ -38,3 +38,10 @@ export function diffReadSnapshot(records,seen={}) {
   }
   return {added,changed,entries};
 }
+
+/** Update just one read receipt without clearing unread siblings. */
+export function setRecordRead(receipts,record){
+  const key=recordKey(record);
+  receipts[key]=readSnapshot([record])[key];
+  return receipts[key];
+}

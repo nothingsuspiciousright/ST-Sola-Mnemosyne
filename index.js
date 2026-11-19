@@ -4,7 +4,9 @@ import {SHELVES, retrieve, validateArchive, splitMemoryBook, inGameStamp} from '
 import {initNotifications, notifyMemoryUpdated} from './src/notifications.js';
 import {recordKey} from './src/read-markers.js';
 const BASE=new URL('.',import.meta.url);
-let selectedShelf='chronology',activeTab='archive',candidates=[],visibleShelfChanges=new Map(),recapShown=30;
+let selectedShelf='chronology',activeTab='archive',candidates=[],recapShown=30;
+const expandedRecords=new Set();
+let lastRenderedShelf=null;
 const $ = selector=>document.querySelector(`#mnemosyne-panel ${selector}`);
 function status(message,bad=false){const el=$('#mn-status');if(el){el.textContent=message;el.dataset.level=bad?'error':'info';}}
 function displayError(error){status(error?.message??String(error),true);console.error('[Mnemosyne]',error);}
@@ -16,8 +18,15 @@ function renderProfiles(){const sel=$('#mn-profile');if(!sel)return;sel.replaceC
 function updateChat(){const s=mn.getStats(),v=$('#mn-overview');if(!v)return;
   const ix=s?.indexing; const stop=$('#mn-stop-index');const resume=$('#mn-resume-index');
   if(stop)stop.disabled=!ix?.running; if(resume)resume.disabled=!!ix?.running;
-  const prog=$('#mn-index-progress');
-  if(prog)prog.textContent=ix?.progress?`Индексация: ${ix.progress.status} · ${ix.progress.completedSources??0}/${ix.progress.totalSources??'?'} исходников${ix.lastError?' · ошибка на сообщении #'+(ix.lastError.firstMessageIndex+1):''}`:'Индексация не запускалась.';
+  const prog=$('#mn-index-progress'),bar=$('#mn-index-bar'),fill=$('#mn-index-fill');
+  const p=ix?.progress,done=Math.max(0,Number(p?.completedSources)||0),total=Math.max(0,Number(p?.totalSources)||0);
+  const percent=total?Math.min(100,Math.round(100*done/total)):0;
+  const stateNames={running:'В работе',stopping:'Останавливается',stopped:'На паузе',error:'Ошибка',done:'Завершено'};
+  if(prog)prog.textContent=p
+    ?`Индексация: ${stateNames[p.status]||p.status} · ${done}/${total} исходников (${percent}%) · API-запросов за запуск: ${p.apiRequests??0}${p.blocked?' · пропущено: '+p.blocked:''}${ix.lastError?.firstMessageIndex!=null?' · сбой на #'+(ix.lastError.firstMessageIndex+1):''}`
+    :'Индексация ещё не запускалась.';
+  if(bar){bar.hidden=!p;bar.setAttribute('aria-valuenow',String(percent));bar.setAttribute('aria-valuetext',`${done} из ${total} исходников`);bar.dataset.state=p?.status||'idle';}
+  if(fill)fill.style.width=`${percent}%`;
   v.textContent=s?.awaitingManualScan?'Память этого чата очищена. Для нового прохода сначала нажми «Обновить архив из чата».':s?`Источников: ${s.sourceCount} · фактов: ${s.factCount} · фрагментов оригинала: ${s.chunkCount} · импортов: ${s.imports} · заблокированных пакетов: ${s.blockedBatches} · новых ответов до автообновления: ${Math.max(0,s.batchEvery-s.pending)} · ${s.valid?'целостность OK':'ОШИБКИ'}`:'Открой сохранённый чат для работы с памятью.';
   renderOriginals();
   $('#mn-sync').textContent=s?.lastSync?`Снимок сервера: ${new Date(s.lastSync).toLocaleString()}`:'Резервная копия ещё не создана';
@@ -25,7 +34,7 @@ function updateChat(){const s=mn.getStats(),v=$('#mn-overview');if(!v)return;
   renderShelves();renderLog();
 }
 /** Controlled disclosure avoids theme-wide <details>/<summary> styling from escaping its row. */
-function makeRecordRow(label, body, metadata=''){
+function makeRecordRow(label, body, metadata='', onExpanded=null){
   const row=document.createElement('div');row.className='mn-record';
   const toggle=document.createElement('button');toggle.type='button';toggle.className='mn-record-toggle';
   toggle.textContent=String(label??'');toggle.setAttribute('aria-expanded','false');
@@ -35,6 +44,7 @@ function makeRecordRow(label, body, metadata=''){
   toggle.addEventListener('click',()=>{
     content.hidden=!content.hidden;
     toggle.setAttribute('aria-expanded',String(!content.hidden));
+    if(!content.hidden)onExpanded?.();
   });
   row.append(toggle,content);return row;
 }
@@ -50,19 +60,24 @@ function renderShelves(){const parent=$('#mn-shelves');if(!parent)return;parent.
       pill.title=kind==='new'?`${count} новых записей`:`${count} изменённых записей`;
       button.append(pill);
     }
-    button.addEventListener('click',async()=>{
-      if(id!==selectedShelf)recapShown=30;
+    button.addEventListener('click',()=>{
+      if(id!==selectedShelf){recapShown=30;expandedRecords.clear();}
       selectedShelf=id;
-      // Keep visual highlights for the opened shelf, but clear unread counters
-      // persistently for this chat. Other shelves retain their unread status.
-      visibleShelfChanges=mn.shelfChanges(id).entries;
+      // Choosing a shelf is NOT the same as reading its individual records.
+      // Unread markers clear only when a record is expanded or user chooses Mark all.
       renderShelves();
-      try{await mn.markShelfRead(id);renderShelves();}catch(e){displayError(e);}
     });
     parent.append(button);
   }
-  const list=$('#mn-records');list.replaceChildren();
+  const list=$('#mn-records');
+  const preserveScroll=lastRenderedShelf===selectedShelf;
+  const oldScroll=preserveScroll?list.scrollTop:0;
+  lastRenderedShelf=selectedShelf;
+  list.replaceChildren();
   const allItems=mn.shelfRecords(selectedShelf);
+  const changesForShelf=mn.shelfChanges(selectedShelf).entries;
+  const markAll=$('#mn-mark-shelf-read');
+  if(markAll){markAll.disabled=changesForShelf.size===0;markAll.textContent=changesForShelf.size?`Отметить все прочитанными (${changesForShelf.size})`:'Всё прочитано';}
   const rawSourceById=new Map((mn.currentArchive()?.sources??[]).map(x=>[x.id,x.raw]));
   const items=allItems.slice(0,selectedShelf==='recaps'?recapShown:80);
   if(!items.length){list.textContent=selectedShelf==='recaps'
@@ -88,8 +103,22 @@ function renderShelves(){const parent=$('#mn-shelves');if(!parent)return;parent.
     const metadata=selectedShelf==='recaps'
       ?`Полный оригинальный recap · игровое время: ${item.gameStamp||'не указано'} · источник: ${item.sourceId} · свайп ${item.swipe+1} · ${item.text.length} символов${item.sourceDate?' · сохранено: '+item.sourceDate:''}`
       :`Дата события: ${item.eventDate||'не установлена'}${item.eventTime?' · '+item.eventTime:''}${sourceStamp&&!item.eventDate?' · сцена источника: '+sourceStamp:''}${item.placeName?' · место: '+item.placeName:''} · Источник: ${item.sourceIds?.join(', ')??'—'} · ${item.certainty??'неизвестно'} · ${item.lifecycle??''}${status}${item.mentionCount>1?' · упоминаний места: '+item.mentionCount:''}`;
-    const row=makeRecordRow(summary,item.text,metadata);
-    const diff=visibleShelfChanges.get(recordKey(item));
+    const key=recordKey(item),shelfAtRender=selectedShelf,expandKey=`${shelfAtRender}:${key}`;
+    const row=makeRecordRow(summary,item.text,metadata,()=>{
+      expandedRecords.add(expandKey);
+      if(!mn.shelfChanges(shelfAtRender).entries.has(key))return;
+      // Persist the exact record version the reader opened. If the model edits it
+      // meanwhile, the newer version remains unread.
+      mn.markRecordRead(shelfAtRender,item).then(()=>renderShelves()).catch(displayError);
+    });
+    if(expandedRecords.has(expandKey)){
+      row.querySelector('.mn-record-content').hidden=false;
+      row.querySelector('.mn-record-toggle').setAttribute('aria-expanded','true');
+    }
+    row.querySelector('.mn-record-toggle').addEventListener('click',()=>{
+      if(row.querySelector('.mn-record-content').hidden)expandedRecords.delete(expandKey);
+    });
+    const diff=changesForShelf.get(key);
     if(diff){
       row.classList.add(`mn-record-${diff.kind}`);
       const mark=document.createElement('span');mark.className=`mn-record-marker mn-record-marker-${diff.kind}`;
@@ -115,6 +144,7 @@ function renderShelves(){const parent=$('#mn-shelves');if(!parent)return;parent.
     more.addEventListener('click',()=>{recapShown+=30;renderShelves();});
     list.append(more);
   }
+  list.scrollTop=oldScroll;
 }
 function renderOriginals(){
   const select=$('#mn-original-select');if(!select)return;
@@ -155,6 +185,12 @@ async function initUI(){const container=document.querySelector('#extensions_sett
   bind('#mn-auto-update','change',()=>{s.autoUpdate=$('#mn-auto-update').checked;mn.saveSettings();status(s.autoUpdate?'Автообновление включено.':'Автообновление выключено.');});
   bind('#mn-auto-backup','change',()=>{s.autoBackup=$('#mn-auto-backup').checked;mn.saveSettings();});
   bind('#mn-success-notifications','change',()=>{s.successNotifications=$('#mn-success-notifications').checked;mn.saveSettings();});
+  bind('#mn-mark-shelf-read','click',async()=>{
+    const shelf=selectedShelf;
+    await mn.markShelfRead(shelf);
+    // Remove current badges immediately; reopening the shelf won't resurrect them.
+    renderShelves();
+  });
   bind('#mn-scan','click',async()=>{await mn.fullRescan({notify:true});updateChat();});
   bind('#mn-extract','click',async()=>{status('Архивариус обрабатывает новые события…');const r=await mn.processBacklog({force:true});status(`Готово: ${r.batches} пакетов, +${r.facts} фактов, заблокировано ${r.blocked??0}. Пропуски не считаются извлечёнными фактами.`);updateChat();});
   bind('#mn-stop-index','click',()=>{if(mn.stopIndexing())status('Остановка запрошена. Текущий запрос может завершиться, новые пакеты не запускаются.');updateChat();});
@@ -176,7 +212,7 @@ async function initUI(){const container=document.querySelector('#extensions_sett
     try{
       status('Создаю новый пустой архив и удаляю данные Мнемозины текущего чата…');
       const result=await mn.resetCurrentChat();
-      candidates=[];visibleShelfChanges=new Map();selectedShelf='chronology';recapShown=30;
+      candidates=[];expandedRecords.clear();lastRenderedShelf=null;selectedShelf='chronology';recapShown=30;
       $('#mn-search').value='';$('#mn-results').replaceChildren();
       $('#mn-import-text').value='';$('#mn-import-file').value='';
       $('#mn-detected').replaceChildren(mkOption('','— источники ещё не искали —'));
@@ -231,7 +267,7 @@ globalThis.solaMnemosyneBeforeGeneration=async (_chat,_contextSize,_abort,type)=
 
 async function init(){initNotifications();await initUI();const c=SillyTavern.getContext();
   const events=c.event_types,source=c.eventSource;
-  source.on(events.CHAT_CHANGED,async()=>{try{recapShown=30;visibleShelfChanges=new Map();await mn.openChat();updateChat();}catch(e){displayError(e);}});
+  source.on(events.CHAT_CHANGED,async()=>{try{recapShown=30;expandedRecords.clear();await mn.openChat();updateChat();}catch(e){displayError(e);}});
   source.on(events.MESSAGE_RECEIVED,async()=>{try{await mn.archiveEvent();const a=mn.currentArchive();const count=a?.sources.filter(s=>s.active&&s.role==='assistant').length??0;
     if(mn.settings().autoUpdate&&mn.settings().profileId&&a){mn.maybeAutoProcess().then(updateChat).catch(displayError);}
     updateChat();}catch(e){displayError(e);}});

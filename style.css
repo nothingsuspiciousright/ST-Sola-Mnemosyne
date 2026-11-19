@@ -104,7 +104,7 @@
 @media (prefers-reduced-motion:reduce){#mnemosyne-toast.mn-toast{transition:none;transform:none}}
 @media(max-width:480px){#mnemosyne-toast.mn-toast{right:12px;bottom:max(15px,env(safe-area-inset-bottom));max-width:min(300px,calc(100vw - 24px));font-size:11px}}
 
-/* Per-chat unread indicators; these are cleared per shelf only when opened. */
+/* Per-chat unread indicators: read each expanded record or mark shelf read explicitly. */
 #mnemosyne-panel .mn-chip{display:inline-flex;align-items:center;gap:6px;flex-wrap:wrap;}
 #mnemosyne-panel .mn-unread{display:inline-flex;white-space:nowrap;align-items:center;
   font:600 10px/1.35 system-ui,sans-serif;border-radius:99px;padding:2px 6px;
@@ -140,3 +140,21 @@
 /* Indexing progress and cooperative pause/resume. */
 #mnemosyne-panel .mn-index-progress{margin:8px 0;padding:9px 10px;border:1px solid var(--mn-line);border-radius:9px;background:#9cbbdb0c;font:12px/1.5 inherit;overflow-wrap:anywhere;color:#d9e5f5;}
 #mnemosyne-panel #mn-stop-index:disabled,#mnemosyne-panel #mn-resume-index:disabled{opacity:.45;cursor:default;}
+
+/* Quiet real completion progress (only committed or explicitly skipped sources).
+ * Do not animate a fabricated completion percentage during a slow API request. */
+#mnemosyne-panel .mn-index-widget{margin:8px 0 12px;padding:8px 10px 11px;border:1px solid var(--mn-line);border-radius:9px;background:rgba(142,167,203,.045)}
+#mnemosyne-panel .mn-index-widget .mn-index-progress{margin:0 0 7px;padding:0;border:0;background:transparent;font:12px/1.55 inherit;color:var(--mn-ink);}
+#mnemosyne-panel .mn-progress-track{box-sizing:border-box;display:block;width:100%;height:7px;overflow:hidden;
+ border-radius:99px;background:rgba(173,196,229,.15);border:1px solid rgba(182,204,233,.09)}
+#mnemosyne-panel .mn-progress-track[hidden]{display:none!important}
+#mnemosyne-panel .mn-progress-fill{height:100%;width:0%;max-width:100%;border-radius:99px;
+ background:linear-gradient(90deg,rgba(145,165,195,.8),rgba(207,220,238,.95));transition:width .25s ease-out}
+#mnemosyne-panel .mn-progress-track[data-state="error"] .mn-progress-fill{background:rgba(221,141,146,.8)}
+#mnemosyne-panel .mn-progress-track[data-state="stopped"] .mn-progress-fill{background:rgba(211,186,142,.8)}
+#mnemosyne-panel .mn-read-actions{display:flex;align-items:center;justify-content:space-between;gap:9px;flex-wrap:wrap;margin:5px 0 8px}
+#mnemosyne-panel .mn-read-actions .mn-hint{flex:1 1 180px;margin:0}
+#mnemosyne-panel #mn-mark-shelf-read{font-size:11px;border-radius:8px;padding:6px 10px;min-height:28px;
+ background:rgba(165,187,218,.1);border:1px solid var(--mn-line);color:var(--mn-ink);cursor:pointer}
+#mnemosyne-panel #mn-mark-shelf-read:disabled{opacity:.44;cursor:default}
+@media(prefers-reduced-motion:reduce){#mnemosyne-panel .mn-progress-fill{transition:none}}

@@ -1,6 +1,6 @@
 <section id="mnemosyne-panel" class="mn-theme">
   <details class="mn-root" open>
-    <summary class="mn-top"><span class="mn-symbol">✦</span><span><strong>Sola Mnemosyne</strong><small>Глубокая память · архивариус</small></span><span class="mn-version">v0.3.13</span></summary>
+    <summary class="mn-top"><span class="mn-symbol">✦</span><span><strong>Sola Mnemosyne</strong><small>Глубокая память · архивариус</small></span><span class="mn-version">v0.3.14</span></summary>
     <div class="mn-body">
       <p class="mn-subtle">Независима от Summarize, векторов и лорбуков. Исходная история сохраняется; в контекст передаются выбранные записи.</p>
       <nav class="mn-tabs">
@@ -46,7 +46,10 @@
           <button id="mn-sync-now" type="button" class="menu_button">Копия на сервере</button>
           <button id="mn-export" type="button" class="menu_button">Скачать полный архив</button>
         </div>
-        <div id="mn-index-progress" class="mn-index-progress" aria-live="polite">Индексация не запускалась.</div>
+        <div class="mn-index-widget">
+          <div id="mn-index-progress" class="mn-index-progress" aria-live="polite">Индексация ещё не запускалась.</div>
+          <div id="mn-index-bar" class="mn-progress-track" role="progressbar" aria-label="Прогресс индексации" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" hidden><div id="mn-index-fill" class="mn-progress-fill"></div></div>
+        </div>
         <p class="mn-hint">Остановка срабатывает после завершения текущего API-запроса: уже подтверждённые пакеты сохраняются. При ошибке нажми «Продолжить» — повторится первый НЕобработанный пакет. Пакеты, отклонённые провайдером, останутся помечены как пропущенные.</p>
         <div id="mn-sync" class="mn-hint"></div>
         <div id="mn-injection" class="mn-hint"></div>
@@ -55,6 +58,7 @@
         </label>
         <div id="mn-results" class="mn-results"></div>
         <h4>Полочки памяти</h4><p class="mn-hint">Тематические полочки содержат отдельные факты архивариуса. Полочка «Полные recap» показывает текст каждого сохранённого recap целиком, непосредственно из оригинального сообщения, без нового пересказа или оплаты API. Оригинал старой книги находится во вкладке «Наследие».</p><div id="mn-shelves" class="mn-shelves"></div>
+        <div class="mn-read-actions"><span class="mn-hint">Чтобы убрать отметку «Новое» или «Изменено», раскрой запись. Остальные останутся непрочитанными.</span><button id="mn-mark-shelf-read" type="button" class="menu_button">Отметить все прочитанными</button></div>
         <div id="mn-records" class="mn-record-list"></div>
       </section>
       <section data-page="import" hidden>
