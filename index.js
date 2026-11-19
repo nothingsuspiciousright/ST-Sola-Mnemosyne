@@ -13,7 +13,8 @@ function renderProfiles(){const sel=$('#mn-profile');if(!sel)return;sel.replaceC
   for(const p of mn.connectionProfiles())sel.append(mkOption(p.id,`${p.name} · ${p.model??p.api??''}`));sel.value=mn.settings().profileId??'';
 }
 function updateChat(){const s=mn.getStats(),v=$('#mn-overview');if(!v)return;
-  v.textContent=s?`Источников: ${s.sourceCount} · фактов: ${s.factCount} · полочек: ${s.chunkCount} · импортов: ${s.imports} · новых ответов до автообновления: ${Math.max(0,s.batchEvery-s.pending)} · ${s.valid?'целостность OK':'ОШИБКИ'}`:'Открой сохранённый чат для работы с памятью.';
+  v.textContent=s?`Источников: ${s.sourceCount} · фактов: ${s.factCount} · фрагментов оригинала: ${s.chunkCount} · импортов: ${s.imports} · новых ответов до автообновления: ${Math.max(0,s.batchEvery-s.pending)} · ${s.valid?'целостность OK':'ОШИБКИ'}`:'Открой сохранённый чат для работы с памятью.';
+  renderOriginals();
   $('#mn-sync').textContent=s?.lastSync?`Снимок сервера: ${new Date(s.lastSync).toLocaleString()}`:'Резервная копия ещё не создана';
   $('#mn-injection').textContent=mn.injectionInfo()||'Память ещё не подставлялась в запрос';
   renderShelves();renderLog();
@@ -39,12 +40,33 @@ function renderShelves(){const parent=$('#mn-shelves');if(!parent)return;parent.
   }
   const list=$('#mn-records');list.replaceChildren();
   const items=mn.shelfRecords(selectedShelf).slice(0,80);
-  if(!items.length){list.textContent='Пока пусто. Импортируй Memory Book или обработай текущий чат.';return;}
+  if(!items.length){list.textContent='Структурированных записей здесь пока нет. Оригинальная Memory Book сохранена во вкладке «Наследие»; при необходимости запусти переразметку.';return;}
+  const promiseNames={unknown:'не определён',pending:'ожидает выполнения',fulfilled:'выполнено',broken:'нарушено',cancelled:'отменено'};
+  const arcNames={unknown:'не определён',planned:'планируется',active:'идёт',completed:'завершена',paused:'приостановлена',abandoned:'оставлена'};
   for(const item of items){
-    const summary=(item.text??item.raw??'').slice(0,150);
-    const metadata=`Источник: ${item.sourceId??item.sourceIds?.join(', ')??'—'} · ${item.certainty??'legacy'} · ${item.lifecycle??''}`;
-    list.append(makeRecordRow(summary,item.raw??item.text,metadata));
+    const promiseMark={unknown:'? статус не подтверждён',pending:'○ ожидает',fulfilled:'✓ выполнено',broken:'! нарушено',cancelled:'× отменено'};
+    const arcMark={unknown:'? статус неизвестен',planned:'○ планируется',active:'◐ продолжается',completed:'✓ завершена',paused:'Ⅱ на паузе',abandoned:'× прекращена'};
+    const prefix=selectedShelf==='promises'?`[${promiseMark[item.promiseStatus]??promiseMark.unknown}] `:
+      selectedShelf==='arcs'?`[${arcMark[item.arcStatus]??arcMark.unknown}] `:'';
+    const summary=prefix+item.text.slice(0,145);
+    const status=selectedShelf==='promises'?` · Обещание: ${promiseNames[item.promiseStatus]??'не определён'}`:
+      selectedShelf==='arcs'?` · Арка: ${arcNames[item.arcStatus]??'не определён'}`:
+      selectedShelf==='knowledge'?` · Кому известно: ${item.knowledge||'не установлено'} (${item.knowledgeState||'unknown'})`:'';
+    const metadata=`Источник: ${item.sourceIds?.join(', ')??'—'} · ${item.certainty??'неизвестно'} · ${item.lifecycle??''}${status}`;
+    list.append(makeRecordRow(summary,item.text,metadata));
   }
+}
+function renderOriginals(){
+  const select=$('#mn-original-select');if(!select)return;
+  const originals=mn.legacySources();
+  const old=select.value;
+  if(select.options.length!==originals.length+1||originals.some((x,i)=>select.options[i+1]?.value!==x.id)){
+    select.replaceChildren(mkOption('','— Выбери импортированную Memory Book —'));
+    originals.forEach(x=>select.append(mkOption(x.id,`${x.label} · ${x.raw?.length??0} символов`)));
+    select.value=old||'';
+  }
+  const original=originals.find(x=>x.id===select.value);
+  const view=$('#mn-original-content');if(view)view.value=original?.raw??'';
 }
 function renderLog(){const root=$('#mn-log');if(!root)return;root.replaceChildren();for(const l of mn.log.slice(0,35)){
   const line=document.createElement('div');line.className=`mn-log-line ${l.level}`;line.textContent=`${l.at} · ${l.level}: ${l.message}`;root.append(line);
@@ -77,9 +99,18 @@ async function initUI(){const container=document.querySelector('#extensions_sett
   bind('#mn-export','click',()=>{mn.exportBackup();status('Полный архив экспортирован в JSON.');});
   bind('#mn-restore','change',async()=>{const f=$('#mn-restore').files?.[0];if(!f)return;if(!window.confirm('Заменить текущий архив этой резервной копией? Сначала экспортируй текущую!'))return;await restoreFile(f);});
   bind('#mn-detect','click',listDetection);
+  bind('#mn-original-select','change',renderOriginals);
   bind('#mn-detected','change',()=>{const i=Number($('#mn-detected').value);if(Number.isInteger(i)&&candidates[i])$('#mn-import-text').value=candidates[i].text;});
   bind('#mn-import-file','change',async()=>{const f=$('#mn-import-file').files?.[0];if(f){$('#mn-import-text').value=await f.text();status(`Прочитан файл: ${f.name}`);}});
   bind('#mn-legacy-deep','click',async()=>{const n=mn.currentArchive()?.chunks?.length||0;if(!n)throw Error('Сначала импортируй Memory Book.');if(!window.confirm(`Архивариус дополнительно проиндексирует ${n} фрагментов старой Memory Book с оплатой запросов к выбранной модели. Продолжить?`))return;status('Разбираю наследие небольшими порциями; ошибки JSON будут автоматически перепроверены…');const v=await mn.processLegacy();status(`Готово: ${v.batches} пакетов, ${v.facts} новых фактов`);updateChat();});
+  bind('#mn-legacy-rebuild','click',async()=>{
+    const n=mn.currentArchive()?.chunks?.length||0;
+    if(!n)throw Error('Сначала импортируй Memory Book.');
+    if(!window.confirm(`Повторно обработать ${n} фрагментов старой книги? Это платные запросы архивариусу. Пока не завершится ВСЯ книга, прежние записи останутся нетронутыми. Перед запуском скачай полный архив.`))return;
+    status('Провожу полную переразметку. Результаты сохраняются по частям; старые записи пока не меняются…');
+    const result=await mn.processLegacy({rebuild:true});
+    status(`Полная переразметка завершена: ${result.total} структурированных записей. Оригинал сохранён.`);updateChat();
+  });
   bind('#mn-import','click',async()=>{const text=getInput();if(!text.trim())throw Error('Выбери Memory Book, вставь текст или загрузите файл.');
     const chunks=splitMemoryBook(text);if(!window.confirm(`Импортировать ${chunks.length} разделов/фрагментов? Оригинал сохранится целиком; Summarize не изменится.`))return;
     const r=await mn.importLegacy(text,$('#mn-import-name').value.trim()||'Memory Book');

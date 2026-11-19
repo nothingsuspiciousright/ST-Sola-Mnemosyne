@@ -1,4 +1,4 @@
-import {SHELVES,newArchive,snapshotChat,mergeSources,syncActiveSources,sourceId,importMemoryBook,parseJsonReply,addFacts,extractionPrompt,retrieve,renderContext,validateArchive,terms,hash,pendingExtraction,extractionView,planLegacyJobs,requestLegacyFacts} from './core.js';
+import {SHELVES,newArchive,snapshotChat,mergeSources,syncActiveSources,sourceId,importMemoryBook,parseJsonReply,addFacts,extractionPrompt,retrieve,renderContext,validateArchive,terms,hash,pendingExtraction,extractionView,planLegacyJobs,requestLegacyFacts,segmentLegacyChunk,currentStateRecords,activeFact} from './core.js';
 import {localGet,localPut,serverGet,serverPut,downloadJson} from './storage.js';
 import {ConnectionManagerRequestService} from '../../../shared.js';
 const KEY='sola_mnemosyne_v1';
@@ -94,7 +94,10 @@ export async function processBacklog({force=false}={}){
       const origChatId=activeId;
       const id=`batch-${hash(six.map(x=>x.id).join('|'))}`;
       try{
-        const reply=await callArchivist(extractionPrompt(six),settings().maxTokens);
+        const openPromises=currentStateRecords(active.facts,'promises')
+          .filter(f=>['unknown','pending'].includes(f.promiseStatus??'unknown')&&f.entityKey)
+          .slice(0,35).map(f=>({entity_key:f.entityKey,text:f.text,status:f.promiseStatus}));
+        const reply=await callArchivist(extractionPrompt(six,{openPromises}),settings().maxTokens);
         if(origChatId!==chatIdentity())throw Error('Chat changed during extraction; aborted to prevent contamination');
         if(!Array.isArray(reply.facts))throw Error('Archivist JSON missing facts array');
         const added=addFacts(active,six.map(x=>x.id),reply.facts);
@@ -121,58 +124,99 @@ export async function maybeAutoProcess(){
   try {return await processBacklog({force:false});}
   finally {autoRunning=false;}
 }
-/** Deep legacy migration using the separate profile; raw imported book remains unchanged. */
-export async function processLegacy(){
+/** The full unabridged Memory Book is always preserved. Normal deep import
+ * commits per original source chunk. Reindex stages replacements in separate
+ * local storage and never changes visible facts until ALL jobs succeed. */
+async function extractChunk(chunk){
+  const parts=segmentLegacyChunk(chunk);
+  const jobs=planLegacyJobs(parts,{maxChunks:2,maxCharacters:2300});
+  const all=[];
+  for(const block of jobs){
+    const ask=async(group)=>requestLegacyFacts(group,(prompt,tokenLimit)=>callArchivist(prompt,tokenLimit),{
+      maxAttempts:2,maxTokens:settings().maxTokens,
+      onRetry:()=>sendStatus('warn','Архивариус вернул некорректный JSON, повторяю маленький фрагмент.')});
+    try{all.push(...await ask(block));}
+    catch(err){
+      if(block.length===1)throw err;
+      sendStatus('warn','Разбиваю проблемный фрагмент на отдельные части.');
+      for(const one of block)all.push(...await ask([one]));
+    }
+  }
+  return all;
+}
+export async function processLegacy({rebuild=false}={}){
   if(!active)throw Error('No chat is open');
   if(!settings().profileId)throw Error('Select an archivist Connection Profile');
   return enqueue(async()=>{
-    const completed=new Set((active.legacyBatches??[]).filter(b=>b.status==='done').flatMap(b=>b.chunkIds));
-    const pending=active.chunks.filter(c=>!completed.has(c.id));
-    const jobs=planLegacyJobs(pending);
+    const initial=active,identity=activeId;
+    const completed=new Set((initial.legacyBatches??[]).filter(b=>b.status==='done').flatMap(b=>b.chunkIds));
+    const pending=rebuild?initial.chunks:initial.chunks.filter(c=>!completed.has(c.id));
     let batches=0,facts=0;
-    const identity=activeId;
-    const commit=async(block,candidates)=>{
-      // No result is ever committed after the player switches conversations.
-      if(identity!==chatIdentity()||activeId!==identity)throw Error('Chat changed during legacy migration; result discarded');
-      const ids=block.map(c=>c.id);
-      const added=addFacts(active,ids,candidates);
-      (active.legacyBatches??=[]).push({chunkIds:ids,status:'done',at:new Date().toISOString(),facts:added.length});
-      active.revision++;
-      await persist();batches++;facts+=added.length;
-      sendStatus('info',`Legacy index: ${batches}/${jobs.length} jobs completed, +${added.length} facts`);
-    };
-    const ask=async(block)=>requestLegacyFacts(block,
-      (prompt,tokenLimit)=>callArchivist(prompt,tokenLimit),
-      {maxAttempts:2,maxTokens:settings().maxTokens,
-       onRetry:({attempt})=>sendStatus('warn',`Archivist JSON invalid; retrying this memory fragment (${attempt}/2). Earlier records remain safe.`)});
-    for(const block of jobs){
-      let extracted;
-      try{extracted=await ask(block);}catch(error){
-        // Fall back only for model-response failures, never for storage failures.
-        if(block.length>1){
-          sendStatus('warn','Memory batch failed; trying smaller individual fragments.');
-          for(const single of block){
-            let factsForSingle;
-            try{factsForSingle=await ask([single]);}catch(inner){
-              active.diagnostics.push({at:new Date().toISOString(),kind:'legacy_error',chunkIds:[single.id],message:inner.message});
-              await persist();
-              sendStatus('error',`Legacy index paused. Saved progress can be resumed: ${inner.message}`);
-              throw inner;
-            }
-            await commit([single],factsForSingle);
-          }
-          continue;
-        }
-        active.diagnostics.push({at:new Date().toISOString(),kind:'legacy_error',chunkIds:block.map(c=>c.id),message:error.message});
-        await persist();
-        sendStatus('error',`Legacy index paused. Saved progress can be resumed: ${error.message}`);
-        throw error;
-      }
-      await commit(block,extracted);
+    if(rebuild){
+      const fingerprint=hash(initial.chunks.map(c=>`${c.id}:${hash(c.raw)}`).join('|'));
+      if(initial.legacyRebuild && initial.legacyRebuild.fingerprint!==fingerprint)
+        throw Error('Imported sources changed during reindex; export the archive first.');
+      initial.legacyRebuild??={fingerprint,doneIds:[],stagedFacts:[],startedAt:new Date().toISOString()};
+      await persist();
     }
-    if(settings().autoBackup&&batches)try{await backupNow();}catch(e){sendStatus('warn',`Imported data saved locally; remote backup failed: ${e.message}`);}
-    if(batches)memoryUpdated('legacy',`Наследие разобрано · +${facts} фактов`);
-    return {batches,facts};
+    for(const chunk of pending){
+      if(identity!==chatIdentity()||activeId!==identity||active!==initial)
+        throw Error('Chat changed during legacy migration; processing paused without losing archived data');
+      if(rebuild&&initial.legacyRebuild.doneIds.includes(chunk.id))continue;
+      let candidates;
+      try{candidates=await extractChunk(chunk);}
+      catch(error){
+        initial.diagnostics.push({at:new Date().toISOString(),kind:'legacy_error',chunkIds:[chunk.id],message:error.message});
+        await persist();sendStatus('error',`Legacy index paused; resume is safe: ${error.message}`);throw error;
+      }
+      if(identity!==chatIdentity()||activeId!==identity||active!==initial)
+        throw Error('Chat changed during legacy migration; uncommitted result discarded');
+      if(rebuild){
+        const staging={facts:initial.legacyRebuild.stagedFacts,revision:0};
+        const added=addFacts(staging,[chunk.id],candidates);
+        initial.legacyRebuild.doneIds.push(chunk.id);
+        initial.legacyRebuild.stagedFacts=staging.facts;
+        facts+=added.length;
+      }else{
+        const added=addFacts(initial,[chunk.id],candidates);
+        initial.legacyBatches.push({chunkIds:[chunk.id],status:'done',at:new Date().toISOString(),facts:added.length});
+        facts+=added.length;
+      }
+      initial.revision++;batches++;await persist();
+      sendStatus('info',`${rebuild?'Переразметка':'Наследие'}: ${batches} источников обработано, +${facts} фактов`);
+    }
+    if(rebuild){
+      // Retain facts originating in live chat; only replace old legacy-only
+      // classifications after complete success. A failed run never touches them.
+      const chunkIds=new Set(initial.chunks.map(c=>c.id));
+      const retained=[];
+      for(const f of initial.facts){
+        const liveRefs=f.sourceIds.filter(id=>!chunkIds.has(id));
+        if(!liveRefs.length)continue;
+        retained.push({...f,sourceIds:liveRefs});
+      }
+      const temp={facts:[],revision:0};
+      for(const f of initial.legacyRebuild.stagedFacts){
+        const existing=temp.facts.find(x=>x.id===f.id);
+        if(existing)existing.sourceIds=[...new Set([...existing.sourceIds,...f.sourceIds])];
+        else temp.facts.push(f);
+      }
+      // Older imported facts precede newer live chat updates in state order.
+      for(const f of retained){
+        const existing=temp.facts.find(x=>x.id===f.id);
+        if(existing)existing.sourceIds=[...new Set([...existing.sourceIds,...f.sourceIds])];
+        else temp.facts.push(f);
+      }
+      initial.facts=temp.facts;
+      initial.legacyBatches=[{chunkIds:initial.chunks.map(x=>x.id),status:'done',at:new Date().toISOString(),facts:initial.legacyRebuild.stagedFacts.length,reindexed:true}];
+      initial.lastReindex=new Date().toISOString();
+      delete initial.legacyRebuild;
+      initial.revision++;await persist();
+      sendStatus('info','Переразметка завершена. Старые классификации заменены, первоисточники и чат сохранены.');
+    }
+    if(settings().autoBackup&&batches)try{await backupNow();}catch(e){sendStatus('warn',`Факты сохранены локально; серверная копия не создана: ${e.message}`);}
+    if(batches||rebuild)memoryUpdated('legacy',rebuild?`Полочки переразмечены · ${initial.facts.length} структурированных записей`:`Наследие разобрано · +${facts} фактов`);
+    return {batches,facts,total:initial.facts.length,rebuild};
   });
 }
 /** Prefer the newest player action to an older assistant recap.
@@ -253,5 +297,11 @@ export async function restoreBackup(json){if(!active)throw Error('Open a chat');
     active=restored;await persist();sendStatus('warn','Restored archive from backup; export a new snapshot before continuing.');memoryUpdated('restore','Архив восстановлен из копии');return validateArchive(active);
   });
 }
-export function shelfRecords(shelf){if(!active)return [];return [...active.facts.filter(x=>x.shelf===shelf),...active.chunks.filter(x=>x.shelves.includes(shelf))].slice(-400).reverse();}
+export function shelfRecords(shelf){
+  if(!active)return [];
+  const activeFacts=active.facts.filter(f=>activeFact(f,active));
+  if(['promises','arcs'].includes(shelf))return currentStateRecords(activeFacts,shelf).slice(0,400);
+  return activeFacts.filter(x=>x.shelf===shelf).slice(-400).reverse();
+}
+export function legacySources(){return active?.imports??[];}
 export async function checkHealth(){if(!active)return {valid:false,errors:['No archive']};const v=validateArchive(active);v.connectionReady=!!settings().profileId&&connectionProfiles().some(x=>x.id===settings().profileId);v.serverSynced=!!active.lastSync;v.injection=lastInjection;return v;}

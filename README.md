@@ -95,6 +95,13 @@ Deep Memory Book indexing now sends small legacy-fragment jobs (no more than two
 
 **After an error in v0.3.3:** update the installed GitHub extension, reload SillyTavern, return to the same chat, and click “Глубокая разметка старой Memory Book” again. Do **not** import the book a second time and do **not** disable Summarize until health checks and live generation tests succeed. Repeated API calls may cost extra; this patch improves recovery but cannot guarantee every provider follows JSON syntax.
 
-## v0.3.5 — Long memory text UI fix
+## v0.3.6 — Long memory text UI fix
 
 Memory shelves and source search now use scoped, accessible expandable rows instead of browser-native `<details>` elements. Long imported paragraphs remain scrollable within each row and can no longer overlap the following records/footer when a SillyTavern theme overrides native disclosure styles. Archive storage, parsing, retrieval and prompt injection are unchanged. No migration or re-import is needed.
+
+
+## Структурированная память (v0.3.6)
+
+Тематические полочки показывают **только отдельные факты** архивариуса. Исходные фрагменты старой Memory Book доступны во вкладке «Наследие» → «Сохранённые первоисточники». Сведения из исходника не теряются. Отдельная кнопка «Переразметить ВСЮ старую книгу» заново индексирует старый импорт небольшими порциями и заменяет прежние классификации только при полном успехе. Учитывай возможную стоимость запросов к архивариусу.
+
+Обещания теперь имеют статусы `unknown`, `pending`, `fulfilled`, `broken`, `cancelled`, а арки — `planned`, `active`, `completed`, `paused`, `abandoned`, `unknown`. Статусы привязываются к конкретному событию и его источнику; без свидетельств завершения обещание не помечается выполненным. Knowledge NPC хранится отдельно от reader-only секретов. Прежде чем отключать Summarize, проверь результат на копии чата.

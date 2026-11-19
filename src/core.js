@@ -4,7 +4,7 @@ export const SHELVES = Object.freeze({
   chronology:'Хронология', people:'Персонажи', relationships:'Отношения',
   promises:'Обещания', items:'Предметы', knowledge:'Знания NPC',
   locations:'Локации', secrets:'Секреты', quotes:'Цитаты и жесты',
-  threads:'Сюжетные линии', other:'Прочее',
+  threads:'Сюжетные линии', arcs:'Сюжетные арки', other:'Прочее',
 });
 const STOP = new Set('и в во на у по из с со не а но или что это как если то когда они она он оно мы вы их ему ее его всё все был была были быть для где там уже ещё от до через за перед этот этой себе к тебе мне при над под очень просто только then with from that have when this your into about they what would there just more were their them the and are was had has did does for not her his our its you she he him hers theirs an all those these this is'.split(' '));
 export const cleanText = value => String(value ?? '').replace(/\u2800/g,' ').replace(/\s+/g,' ').trim();
@@ -76,6 +76,7 @@ export function guessShelves(heading, text='') {
     ['secrets',/secret|тайн|секрет|reader-only|скрыт/],
     ['quotes',/phrase|quote|цитат|фраз|слова|gestur|жест/],
     ['threads',/subplot|future|plotline|сюжет|план|незаверш/],
+    ['arcs',/\barc\b|арка|сюжетн.{0,8}арк|exam arc|story arc/],
   ];for(const [name,re] of tests)if(re.test(t))shelves.push(name);return shelves.length?shelves:['other'];
 }
 export function importMemoryBook(archive, input, {label='Memory Book',url=''}={}) {
@@ -99,11 +100,16 @@ export function normalizeFact(input, batchIds, archive) {
   const people=(Array.isArray(input.people)?input.people:[]).map(cleanText).filter(Boolean).slice(0,12);
   const tags=(Array.isArray(input.tags)?input.tags:[]).map(cleanText).filter(Boolean).slice(0,20);
   const knowledge=cleanText(input.knowledge_holder??'');
+  const entityKey=cleanText(input.entity_key??'').slice(0,220);
+  const promiseStatus=['unknown','pending','fulfilled','broken','cancelled'].includes(input.promise_status)?input.promise_status:'unknown';
+  const arcStatus=['unknown','planned','active','completed','paused','abandoned'].includes(input.arc_status)?input.arc_status:'unknown';
+  const knowledgeState=['unknown','knows','believes','suspects','unaware'].includes(input.knowledge_state)?input.knowledge_state:'unknown';
+  if(shelf==='knowledge'&&(!knowledge||knowledge.toLocaleLowerCase()==='reader-only'||knowledgeState==='unknown'))return null;
   const certainty=['confirmed','belief','possibility'].includes(input.certainty)?input.certainty:'belief';
   const lifecycle=['active','closed','historical'].includes(input.lifecycle)?input.lifecycle:'historical';
   // Content identity allows the same fact to retain citations from both a legacy book and new chat.
   const id=`f-${hash(shelf+'|'+text.toLocaleLowerCase())}-${text.length}`;
-  return {id,shelf,text,people,tags,knowledge,certainty,lifecycle,sourceIds:refs,createdAt:new Date().toISOString(),terms:terms([text,...people,...tags].join(' '))};
+  return {id,shelf,text,people,tags,knowledge,entityKey,promiseStatus,arcStatus,knowledgeState,certainty,lifecycle,sourceIds:refs,createdAt:new Date().toISOString(),terms:terms([text,...people,...tags].join(' '))};
 }
 export function addFacts(archive, sourceIds, candidates) {
   const added=[];let touched=0;const existing=new Map(archive.facts.map(f=>[f.id,f]));
@@ -140,6 +146,46 @@ export function parseJsonReply(reply) {
   }
 }
 
+/** Split an imported paragraph into discrete bullet-level extraction units.
+ * The stable parent chunk ID is retained as a source citation. Originals are immutable. */
+export function segmentLegacyChunk(chunk,{maxCharacters=1150}={}) {
+  const raw=String(chunk.raw??'');
+  const units=[];
+  const lines=raw.split(/\r?\n/);
+  let buffer='';
+  const flush=()=>{if(buffer.trim())units.push(buffer.trim());buffer='';};
+  for(const line of lines){
+    const bullet=/^\s*(?:[-*•]\s+|\d+[.)]\s+)/.test(line);
+    if(bullet)flush();
+    if((buffer+'\n'+line).length>maxCharacters && buffer)flush();
+    if(line.length>maxCharacters){
+      flush();
+      for(let i=0;i<line.length;i+=maxCharacters)units.push(line.slice(i,i+maxCharacters));
+    } else buffer+=(buffer?'\n':'')+line;
+  }
+  flush();
+  const result=[];let current='';
+  const send=()=>{if(current.trim()){result.push(current.trim());current='';}};
+  for(const unit of units){
+    if(current && (current.length+unit.length+1)>maxCharacters)send();
+    current+=(current?'\n':'')+unit;
+  }
+  send();
+  return result.map((text,i)=>({id:chunk.id,heading:chunk.heading,raw:text,part:i+1,total:result.length}));
+}
+
+/** Latest explicit promise/arc update takes precedence for the display.
+ * Every historical update stays in archive.facts with its own citation. */
+export function currentStateRecords(facts,shelf) {
+  const selected=[];const seen=new Set();
+  for(let i=facts.length-1;i>=0;i--){
+    const f=facts[i];if(f.shelf!==shelf)continue;
+    const key=cleanText(f.entityKey).toLocaleLowerCase();
+    if(key){if(seen.has(key))continue;seen.add(key);}
+    selected.push(f);
+  }
+  return selected;
+}
 /** Choose tiny, source-preserving legacy jobs, rather than five large paragraphs
  * whose large JSON answer frequently exceeds a cheap model's output budget. */
 export function planLegacyJobs(chunks, {maxChunks=2,maxCharacters=2600}={}) {
@@ -162,8 +208,9 @@ export async function requestLegacyFacts(chunks, request, {maxAttempts=2,maxToke
   for(let attempt=1;attempt<=maxAttempts;attempt++){
     const maxFacts=attempt===1?12:8;
     const prompt=[
-      {role:'system',content:`You are an archival fact extractor. Output ONE SMALL COMPACT VALID JSON OBJECT ONLY. No Markdown, comments or explanatory prose. JSON schema: {"facts":[{"shelf":"chronology","text":"a concise sourced fact","people":[],"tags":[],"knowledge_holder":"reader-only","certainty":"confirmed","lifecycle":"historical","source_ids":["exact supplied id"]}]}. Allowed shelves: chronology,people,relationships,promises,items,knowledge,locations,secrets,quotes,threads,other. Distinguish NPC knowledge from reader-only secrets. Never invent details. Each fact MUST cite an actual chunk ID. Keep original-language quotations exact where possible. Return at most ${maxFacts} high-value facts; concise JSON on one line; escape quotation marks/newlines inside strings. If no facts, return {"facts":[]}.`},
-      {role:'user',content:JSON.stringify({chunks:chunks.map(c=>({id:c.id,heading:c.heading,text:c.raw}))})},
+      {role:'system',content:`You extract ATOMIC, source-cited facts from a fictional roleplay archive. Return ONLY compact valid JSON {"facts":[...]}. Each object: {"shelf":"chronology|people|relationships|promises|items|knowledge|locations|secrets|quotes|threads|arcs|other","text":"one concise standalone fact","people":[],"tags":[],"entity_key":"stable key for the SAME promise, object, person or arc across updates, or empty","promise_status":"unknown|pending|fulfilled|broken|cancelled","arc_status":"unknown|planned|active|completed|paused|abandoned","knowledge_holder":"NPC name or reader-only","knowledge_state":"unknown|knows|believes|suspects|unaware","certainty":"confirmed|belief|possibility","lifecycle":"active|closed|historical","source_ids":["EXACT source id"]}.
+CRITICAL: one separate item per object, one separate promise per record, one quote/gesture per record. Separate concluded ARC from ongoing THREAD. A secret is ONLY intentionally concealed/restricted information, NOT any line under a loosely classified heading. Ignore book title, instructions, table of contents and administrative preface; these are not world facts. Knowledge shelf ONLY when text explicitly establishes who heard, witnessed, learned, knows, suspects or does not know a fact; never infer knowledge from narrator access. Promise status 'fulfilled' ONLY if execution is explicitly evidenced in the source, 'pending' if explicitly outstanding, otherwise 'unknown'. Never treat a historical fact as an active promise without evidence. No predictions. Do not reproduce entire paragraphs. Max ${maxFacts} facts, cite every fact, keep source language and relevant emotional details. Escape JSON characters. If none, return {"facts":[]}.`},
+      {role:'user',content:JSON.stringify({chunks:chunks.map(c=>({id:c.id,heading:c.heading,part:c.part,total:c.total,text:c.raw}))})},
     ];
     try{
       const result=await request(prompt,maxTokens,attempt);
@@ -245,7 +292,7 @@ export function retrieve(archive, query, {maxCharacters=6500,maxItems=18,mode='s
     if(Number.isFinite(score))scoredItems.push({...entry,historical,anchor,score});
   };
   for(const f of archive.facts)if(f.sourceIds.some(id=>activeIds.has(id)))addEntry('fact',f);
-  for(const ch of archive.chunks)addEntry('legacy',ch);
+  for(const ch of archive.chunks)if(!automatic||!archive.facts.some(f=>f.sourceIds.includes(ch.id)))addEntry('legacy',ch);
   scoredItems.sort((a,b)=>b.score-a.score||String(a.item.id).localeCompare(String(b.item.id)));
   const results=[],seen=new Set();let chars=0,historicalCount=0,anchorCount=0;
   const historyCap=automatic?Math.max(1,Math.min(3,Math.floor(maxItems/4))):maxItems;
@@ -283,11 +330,11 @@ export function validateArchive(archive) {
   for(const f of archive.facts){if(f.sourceIds.some(x=>!sources.has(x)))errors.push(`orphan fact ${f.id}`);}
   return {valid:errors.length===0,errors,sourceCount:archive.sources.length,chunkCount:archive.chunks.length,factCount:archive.facts.length,imports:archive.imports.length};
 }
-export function extractionPrompt(sources) {
+export function extractionPrompt(sources,{openPromises=[]}={}) {
   const safe=sources.map(s=>({id:s.id,role:s.role,name:s.name,text:extractionView(s)}));
   return [
-    {role:'system',content:`You are an archival data extractor for fictional roleplay. Output ONLY valid JSON: {"facts":[{"shelf":"chronology|people|relationships|promises|items|knowledge|locations|secrets|quotes|threads|other","text":"specific concrete factual claim","people":["names"],"tags":["entities or object names"],"knowledge_holder":"name or reader-only","certainty":"confirmed|belief|possibility","lifecycle":"active|closed|historical","source_ids":["source id"]}]}. Preserve Russian names and exact promises where possible. Facts MUST be supported by cited text. Separate events from plans and subjective beliefs. No future prediction or gameplay guidance. Do not merge incompatible swipes. Keep essential emotional details and chronology. Max 45 facts. Do not repeat whole message. If no durable facts, facts [].`},
-    {role:'user',content:JSON.stringify({task:'Extract durable facts and memorable details, maintain strict sources',messages:safe})}
+    {role:'system',content:`You are a strict, non-fictionalizing extractor for FICTIONAL roleplay. Output ONLY compact valid JSON: {"facts":[{"shelf":"chronology|people|relationships|promises|items|knowledge|locations|secrets|quotes|threads|arcs|other","text":"one atomic claim","people":[],"tags":[],"entity_key":"stable identity of promise, item or arc","promise_status":"unknown|pending|fulfilled|broken|cancelled","arc_status":"unknown|planned|active|completed|paused|abandoned","knowledge_holder":"NPC name or reader-only","knowledge_state":"unknown|knows|believes|suspects|unaware","certainty":"confirmed|belief|possibility","lifecycle":"active|closed|historical","source_ids":["exact source id"]}]}. One distinct item, quote, promise or arc PER record. Keep original language and distinctive emotional gestures. Track promise fulfillment only upon explicit completion evidence; never assume merely from time passing. Reuse the entity_key of an existing promise when a new message changes its status, and cite the NEW message. Identify NPC knowledge ONLY when scene explicitly shows hearing, witnessing, disclosure, belief or ignorance. Reader-only secrets are never NPC knowledge. Separate completed arcs from active story threads. Ignore book title/preface and formatting metadata. No guessed events, no predicted outcomes, no incompatible swipe merges. Max 45 facts; if no new durable information return {"facts":[]}.`},
+    {role:'user',content:JSON.stringify({task:'Extract durable atomic facts and any explicitly evidenced status changes',openPromises:openPromises.slice(0,35),messages:safe})}
   ];
 }
 

@@ -1,6 +1,6 @@
 <section id="mnemosyne-panel" class="mn-theme">
   <details class="mn-root" open>
-    <summary class="mn-top"><span class="mn-symbol">✦</span><span><strong>Sola Mnemosyne</strong><small>Глубокая память · архивариус</small></span><span class="mn-version">v0.3.5</span></summary>
+    <summary class="mn-top"><span class="mn-symbol">✦</span><span><strong>Sola Mnemosyne</strong><small>Глубокая память · архивариус</small></span><span class="mn-version">v0.3.6</span></summary>
     <div class="mn-body">
       <p class="mn-subtle">Независима от Summarize, векторов и лорбуков. Исходная история сохраняется; в контекст передаются выбранные записи.</p>
       <nav class="mn-tabs">
@@ -39,7 +39,7 @@
           <input id="mn-search" type="search" placeholder="Имя, предмет, старая реплика…" class="text_pole"/>
         </label>
         <div id="mn-results" class="mn-results"></div>
-        <h4>Полочки</h4><div id="mn-shelves" class="mn-shelves"></div>
+        <h4>Структурированные полочки</h4><p class="mn-hint">Здесь только отдельные факты архивариуса. Полный исходный текст старой книги сохранён во вкладке «Наследие».</p><div id="mn-shelves" class="mn-shelves"></div>
         <div id="mn-records" class="mn-record-list"></div>
       </section>
       <section data-page="import" hidden>
@@ -56,7 +56,12 @@
         </label>
         <div class="mn-actions"><button id="mn-import" type="button" class="menu_button mn-primary">Разложить по полочкам и сохранить оригинал</button></div>
         <p class="mn-hint">Первичный перенос сортирует фрагменты без API-запросов и сохраняет оригинал. Для более точной раскладки можно запустить отдельную модель архивариуса.</p>
-        <div class="mn-actions"><button id="mn-legacy-deep" type="button" class="menu_button">Глубокая разметка старой Memory Book (дешёвая модель)</button></div>
+        <div class="mn-actions"><button id="mn-legacy-deep" type="button" class="menu_button">Глубокая разметка новых фрагментов (дешёвая модель)</button></div>
+        <div class="mn-actions"><button id="mn-legacy-rebuild" type="button" class="menu_button">Переразметить ВСЮ старую книгу по отдельным фактам</button></div>
+        <p class="mn-hint">Переразметка повторно оплачивает API-запросы. Обрабатывает книгу мелкими частями, сохраняет прогресс и заменяет старые классификации только после полного завершения. Перед запуском скачай полный архив.</p>
+        <h4>Сохранённые первоисточники</h4>
+        <label class="mn-field">Открыть оригинал Memory Book <select id="mn-original-select" class="text_pole"></select></label>
+        <textarea id="mn-original-content" class="text_pole" rows="10" readonly placeholder="Выбери импортированный источник выше"></textarea>
       </section>
       <section data-page="diagnostics" hidden>
         <h4>Проверка целостности</h4>

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  newArchive, importMemoryBook, validateArchive, splitMemoryBook, guessShelves,
+  SHELVES, extractionPrompt, newArchive, importMemoryBook, validateArchive, splitMemoryBook, guessShelves,
   snapshotChat, mergeSources, syncActiveSources, normalizeFact,
   addFacts, retrieve, parseJsonReply, renderContext, terms, planLegacyJobs, requestLegacyFacts,
 } from '../src/core.js';
@@ -90,7 +90,7 @@ test('no unrelated secret gets injected without a real term match',()=>{
 });
 
 test('archivist sees recap and scene, not only first 10k chars of metadata-heavy message',()=>{
-  const raw='<mobile_header location="Zone C"/>'+'<ru>'+('Neutral sample. '.repeat(2000))+'</ru>'+
+  const raw='<scene_metadata location="Zone C"/>'+'<ru>'+('Neutral sample. '.repeat(2000))+'</ru>'+
   '<sample_easel>[I. Staging] Inventory value is 12</sample_easel>'+
   '<en><details closed><summary>recap</summary>The access token was moved into Zone C.</details></en>';
   const input=extractionView({role:'assistant',raw});
@@ -185,4 +185,68 @@ test('legacy jobs are small and keep every original fragment exactly once',()=>{
 test('fenced model response is accepted and content arrays are supported',()=>{
   assert.deepEqual(parseJsonReply([{type:'text',text:'```json\n{"facts":[]}\n```'}]),{facts:[]});
   assert.throws(()=>parseJsonReply('{"facts":[1,2 3]}'),/invalid JSON/);
+});
+
+import {segmentLegacyChunk,currentStateRecords} from '../src/core.js';
+
+test('legacy multi-item inventory is separated into source-preserving small pieces',()=>{
+  const raw=[
+    '- **Device A**: installed at Station C.',
+    '- **Device B**: transferred to Agent Gamma.',
+    '- **Device C**: destroyed during inspection.',
+    '- **Device D**: held at Station F.',
+  ].join('\n');
+  const chunks=segmentLegacyChunk({id:'b:2',heading:'Inventory',raw},{maxCharacters:75});
+  assert.ok(chunks.length>1);
+  assert.deepEqual(chunks.map(c=>c.id),Array(chunks.length).fill('b:2'));
+  assert.equal(chunks.map(c=>c.raw).join('\n'),raw);
+  assert.ok(chunks.every(c=>c.raw.length<=75));
+});
+
+test('promise states and arc states are separate from historical lifecycle',()=>{
+  const a=newArchive('neutral');
+  importMemoryBook(a,'[Events Chronicle]\nAgent Alpha promised to deliver Device A.\n\nAgent Alpha later delivered Device A.');
+  const id=a.chunks[0].id;
+  const p=addFacts(a,[id],[{shelf:'promises',text:'Agent Alpha promised to deliver Device A.',entity_key:'deliver-device-a',promise_status:'pending',source_ids:[id]}])[0];
+  assert.equal(p.promiseStatus,'pending');
+  const finished=addFacts(a,[id],[{shelf:'promises',text:'Agent Alpha delivered Device A, fulfilling the promise.',entity_key:'deliver-device-a',promise_status:'fulfilled',source_ids:[id]}])[0];
+  assert.equal(finished.promiseStatus,'fulfilled');
+  assert.equal(currentStateRecords(a.facts,'promises')[0].promiseStatus,'fulfilled');
+  assert.equal(a.facts.length,2); // never delete the original pledge event
+  const unknown=addFacts(a,[id],[{shelf:'promises',text:'Agent Gamma promised an unspecified favor.',source_ids:[id]}])[0];
+  assert.equal(unknown.promiseStatus,'unknown');
+  const arc=addFacts(a,[id],[{shelf:'arcs',text:'Inspection arc completed',entity_key:'inspection',arc_status:'completed',source_ids:[id]}])[0];
+  assert.equal(arc.arcStatus,'completed');
+  assert.equal(SHELVES.arcs,'Сюжетные арки');
+});
+
+test('NPC knowledge requires explicit holder; unspecified knowledge stays unknown',()=>{
+  const a=newArchive('neutral');
+  importMemoryBook(a,'[Events Chronicle]\nAgent Delta heard the station alarm.');
+  const id=a.chunks[0].id;
+  const known=addFacts(a,[id],[{shelf:'knowledge',text:'Agent Delta heard the station alarm.',knowledge_holder:'Agent Delta',knowledge_state:'knows',source_ids:[id]}])[0];
+  const unconfirmed=addFacts(a,[id],[{shelf:'knowledge',text:'Station alarm exists.',source_ids:[id]}])[0];
+  assert.equal(known.knowledge,'Agent Delta');
+  assert.equal(known.knowledgeState,'knows');
+  assert.equal(unconfirmed,undefined); // a fact with no known NPC holder must not be classified as NPC knowledge
+});
+
+test('legacy extractor instructions demand one object per item and explicit evidence for promise closure',async()=>{
+  const chunks=[{id:'a:0',heading:'Items',raw:'- Device A\n- Device B'}];
+  await requestLegacyFacts(chunks,async(prompt)=>{
+    assert.match(prompt[0].content,/one separate item per object/i);
+    assert.match(prompt[0].content,/fulfilled.*ONLY if execution is explicitly evidenced/i);
+    assert.match(prompt[0].content,/concluded ARC/);
+    assert.match(prompt[0].content,/intentionally concealed/i);
+    return '{"facts":[]}';
+  });
+});
+
+test('model extraction gets existing open promise keys and keeps arc and knowledge constraints',()=>{
+  const [{content:system},{content:user}]=extractionPrompt([{id:'m1',role:'assistant',name:'Agent Alpha',raw:'Device A was delivered'}],{
+    openPromises:[{entity_key:'deliver-device-a',text:'Agent Alpha promised Device A',status:'pending'}]
+  });
+  assert.match(system,/Reuse the entity_key/);
+  assert.match(system,/Identify NPC knowledge ONLY when scene explicitly/);
+  assert.equal(JSON.parse(user).openPromises[0].entity_key,'deliver-device-a');
 });
