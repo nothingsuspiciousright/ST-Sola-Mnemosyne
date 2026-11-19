@@ -7,3 +7,7 @@ Do not commit your own memory exports, chat data, API keys, or local runtime arc
 Test fixtures use abstract labels such as `Agent Alpha` and `Zone C` and are not excerpts from a user's roleplay.
 
 Version 0.3.4: small-batch JSON recovery for deep legacy indexing. Do not upload personal exports to GitHub.
+
+### v0.3.5 UI hotfix
+- Replaced theme-sensitive native disclosure rows with custom expandable entries in memory shelves and source search.
+- Confined long memory passages to their own scrollable panes; no archive changes, no re-import required.

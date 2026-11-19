@@ -29,11 +29,55 @@
 #mnemosyne-panel .mn-shelves{display:flex;gap:5px;flex-wrap:wrap;margin:8px 0}
 #mnemosyne-panel .mn-chip{font-size:11px;background:#a3b7ce17;border:1px solid var(--mn-line);color:#c6d5e7;padding:5px 8px;border-radius:99px;cursor:pointer}
 #mnemosyne-panel .mn-chip.current{background:#b8c9e84a;color:#fff}
-#mnemosyne-panel .mn-record-list{max-height:380px;overflow-y:auto}
-#mnemosyne-panel .mn-record{border-bottom:1px solid var(--mn-line);padding:9px 4px;font-size:12px}
-#mnemosyne-panel .mn-record summary{cursor:pointer;line-height:1.5;overflow-wrap:anywhere}
-#mnemosyne-panel .mn-record pre,#mnemosyne-panel .mn-code{white-space:pre-wrap;overflow-wrap:anywhere;font:11px/1.55 ui-monospace,monospace;padding:10px;background:#0b142385;color:#c7d7ea;border-radius:8px;max-height:260px;overflow:auto}
-#mnemosyne-panel .mn-meta{margin:7px 0;color:var(--mn-muted);font:11px/1.5 monospace;overflow-wrap:anywhere}
+/* Private, theme-resistant disclosure rows for long memory passages. */
+#mnemosyne-panel .mn-record-list{
+  display:block;box-sizing:border-box;min-width:0;width:100%;
+  max-height:min(420px,55vh);overflow-y:auto;overflow-x:hidden;
+  overscroll-behavior:contain;scrollbar-gutter:stable;
+}
+#mnemosyne-panel .mn-record{
+  display:block;box-sizing:border-box;position:static;float:none;clear:both;
+  min-width:0;max-width:100%;height:auto;min-height:0;
+  border-bottom:1px solid var(--mn-line);padding:7px 3px;
+  font-size:12px;overflow:visible;
+}
+#mnemosyne-panel .mn-record-toggle{
+  display:block;box-sizing:border-box;position:static;float:none;
+  width:100%;min-width:0;max-width:100%;height:auto;min-height:0;
+  margin:0;padding:5px 5px 5px 21px;
+  border:0;border-radius:5px;background:transparent;box-shadow:none;
+  color:inherit;font:inherit;font-size:12px;line-height:1.5;
+  cursor:pointer;white-space:normal;text-align:left;
+  overflow-wrap:anywhere;word-break:normal;
+}
+#mnemosyne-panel .mn-record-toggle::before{
+  content:'▸';display:inline-block;position:static;float:left;
+  width:16px;margin-left:-19px;color:var(--mn-muted);
+}
+#mnemosyne-panel .mn-record-toggle[aria-expanded="true"]::before{content:'▾'}
+#mnemosyne-panel .mn-record-toggle:hover,#mnemosyne-panel .mn-record-toggle:focus-visible{
+  background:rgba(190,208,233,.09);
+}
+#mnemosyne-panel .mn-record-content{
+  display:block;box-sizing:border-box;position:static;float:none;clear:both;
+  min-width:0;width:100%;max-width:100%;height:auto;
+  padding:4px 0 7px 12px;overflow:visible;
+}
+#mnemosyne-panel .mn-record-content[hidden]{display:none!important}
+#mnemosyne-panel .mn-record-text,#mnemosyne-panel .mn-code{
+  display:block;box-sizing:border-box;position:static;float:none;clear:both;
+  white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word;
+  font:11px/1.55 ui-monospace,monospace;margin:5px 0 0;
+  padding:10px;background:#0b142385;color:#c7d7ea;border-radius:8px;
+  min-width:0;width:100%;max-width:100%;height:auto;
+  max-height:260px;overflow:auto;overscroll-behavior:contain;
+}
+#mnemosyne-panel .mn-meta{
+  display:block;position:static;white-space:normal;
+  margin:7px 0;color:var(--mn-muted);
+  font:11px/1.5 monospace;overflow-wrap:anywhere;
+}
+#mnemosyne-panel [data-page][hidden]{display:none!important}
 #mnemosyne-panel .mn-results{max-height:350px;overflow:auto}
 #mnemosyne-panel .mn-hit{font-size:12px;padding:7px;border-bottom:1px solid var(--mn-line);overflow-wrap:anywhere}
 #mnemosyne-panel .mn-log{max-height:220px;overflow:auto}

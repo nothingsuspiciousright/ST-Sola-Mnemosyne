@@ -18,6 +18,20 @@ function updateChat(){const s=mn.getStats(),v=$('#mn-overview');if(!v)return;
   $('#mn-injection').textContent=mn.injectionInfo()||'Память ещё не подставлялась в запрос';
   renderShelves();renderLog();
 }
+/** Controlled disclosure avoids theme-wide <details>/<summary> styling from escaping its row. */
+function makeRecordRow(label, body, metadata=''){
+  const row=document.createElement('div');row.className='mn-record';
+  const toggle=document.createElement('button');toggle.type='button';toggle.className='mn-record-toggle';
+  toggle.textContent=String(label??'');toggle.setAttribute('aria-expanded','false');
+  const content=document.createElement('div');content.className='mn-record-content';content.hidden=true;
+  if(metadata){const meta=document.createElement('div');meta.className='mn-meta';meta.textContent=metadata;content.append(meta);}
+  const pre=document.createElement('pre');pre.className='mn-record-text';pre.textContent=String(body??'');content.append(pre);
+  toggle.addEventListener('click',()=>{
+    content.hidden=!content.hidden;
+    toggle.setAttribute('aria-expanded',String(!content.hidden));
+  });
+  row.append(toggle,content);return row;
+}
 function renderShelves(){const parent=$('#mn-shelves');if(!parent)return;parent.replaceChildren();
   for(const [id,name] of Object.entries(SHELVES)){
     const button=document.createElement('button');button.type='button';button.textContent=name;button.dataset.shelf=id;button.className=id===selectedShelf?'mn-chip current':'mn-chip';
@@ -27,10 +41,9 @@ function renderShelves(){const parent=$('#mn-shelves');if(!parent)return;parent.
   const items=mn.shelfRecords(selectedShelf).slice(0,80);
   if(!items.length){list.textContent='Пока пусто. Импортируй Memory Book или обработай текущий чат.';return;}
   for(const item of items){
-    const details=document.createElement('details');details.className='mn-record';
-    const summary=document.createElement('summary');summary.textContent=(item.text??item.raw??'').slice(0,150);
-    const meta=document.createElement('div');meta.className='mn-meta';meta.textContent=`Источник: ${item.sourceId??item.sourceIds?.join(', ')??'—'} · ${item.certainty??'legacy'} · ${item.lifecycle??''}`;
-    const pre=document.createElement('pre');pre.textContent=item.raw??item.text;details.append(summary,meta,pre);list.append(details);
+    const summary=(item.text??item.raw??'').slice(0,150);
+    const metadata=`Источник: ${item.sourceId??item.sourceIds?.join(', ')??'—'} · ${item.certainty??'legacy'} · ${item.lifecycle??''}`;
+    list.append(makeRecordRow(summary,item.raw??item.text,metadata));
   }
 }
 function renderLog(){const root=$('#mn-log');if(!root)return;root.replaceChildren();for(const l of mn.log.slice(0,35)){
@@ -77,8 +90,10 @@ async function initUI(){const container=document.querySelector('#extensions_sett
     const sourceHits=a.sources.filter(x=>words.every(w=>x.raw.toLocaleLowerCase().includes(w))).slice(-10).reverse();
     const memoryHits=retrieve(a,q,{maxCharacters:3200,maxItems:8});
     for(const match of memoryHits){const div=document.createElement('div');div.className='mn-hit';div.textContent=match.text;output.append(div);}
-    for(const match of sourceHits){const details=document.createElement('details');details.className='mn-record';const summary=document.createElement('summary');summary.textContent=`Исходник ${match.id} · ${match.role} ${match.active?'(активный свайп)':'(архивная версия)'}`;
-      const pre=document.createElement('pre');pre.textContent=match.raw;details.append(summary,pre);output.append(details);}
+    for(const match of sourceHits){
+      const label=`Исходник ${match.id} · ${match.role} ${match.active?'(активный свайп)':'(архивная версия)'}`;
+      output.append(makeRecordRow(label,match.raw));
+    }
   });
   document.addEventListener('mnemosyne:status',()=>{renderLog();updateChat();});
   document.addEventListener('mnemosyne:injected',()=>updateChat());
